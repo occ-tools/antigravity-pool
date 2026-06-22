@@ -12,7 +12,7 @@ const LOCALHOST_HOSTNAMES = new Set([
 function isLocalhost(req: NextRequest): boolean {
   try {
     const hostname = req.nextUrl.hostname;
-    const clientIp = req.ip || req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || '';
+    const clientIp = (req as any).ip || req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || '';
     const isLocalIp = !clientIp || clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1';
     return LOCALHOST_HOSTNAMES.has(hostname) && isLocalIp;
   } catch {
