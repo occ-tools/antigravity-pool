@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { requireAdmin } from '@/lib/adminAuth';
 import { NextResponse } from 'next/server';
 
 type MonitorMetrics = {
@@ -25,25 +26,35 @@ type MonitorMetrics = {
   };
 };
 
-export async function GET() {
+export async function GET(req: Request) {
+  const unauthorized = requireAdmin(req);
+  if (unauthorized) return unauthorized;
+
   try {
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lte: now } } });
 
-    // Fetch accounts
-    const accounts = await prisma.account.findMany({
-      orderBy: { name: 'asc' },
-    });
-
-    // Fetch logs from the last hour
-    const logs = await prisma.requestLog.findMany({
-      where: {
-        timestamp: { gte: oneHourAgo },
-      },
-      include: {
-        account: true,
-      },
-    });
+    const [accounts, logs] = await Promise.all([
+      prisma.account.findMany({
+        orderBy: { name: 'asc' },
+        include: {
+          leases: {
+            where: { leaseUntil: { gt: now } },
+            orderBy: { leaseUntil: 'desc' },
+            take: 1,
+          },
+        },
+      }),
+      prisma.requestLog.findMany({
+        where: {
+          timestamp: { gte: oneHourAgo },
+        },
+        include: {
+          account: true,
+        },
+      }),
+    ]);
 
     const totalRequests = logs.length;
     const total429 = logs.filter((l) => l.statusCode === 429).length;
@@ -91,7 +102,7 @@ export async function GET() {
         status: acc.status || 'unknown',
         quotaStatus: acc.quotaStatus || 'unknown',
         quotaResetAt: acc.quotaResetAt?.toISOString() ?? null,
-        leaseUntil: acc.leaseUntil?.toISOString() ?? null,
+        leaseUntil: acc.leases[0]?.leaseUntil.toISOString() ?? null,
       })),
       alert: {
         triggered: false,
@@ -106,12 +117,13 @@ export async function GET() {
     }
 
     // Alert: All accounts exhausted
-    const activeAccounts = accounts.filter(
+    const primaryAccounts = accounts.filter((a) => a.id !== 'fallback-ai-studio');
+    const activeAccounts = primaryAccounts.filter(
       (a) => a.status === 'active' && a.quotaStatus !== 'exhausted'
     );
-    if (accounts.length > 0 && activeAccounts.length === 0) {
+    if (primaryAccounts.length > 0 && activeAccounts.length === 0) {
       metrics.alert.triggered = true;
-      metrics.alert.reason = `All ${accounts.length} accounts are exhausted or invalid`;
+      metrics.alert.reason = `All ${primaryAccounts.length} primary account(s) are exhausted or invalid`;
     }
 
     // Alert: Invalid accounts needing login

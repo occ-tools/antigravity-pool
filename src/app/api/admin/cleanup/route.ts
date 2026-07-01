@@ -1,23 +1,24 @@
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/adminAuth';
 
-export async function POST() {
+export async function POST(req: Request) {
+  const unauthorized = requireAdmin(req);
+  if (unauthorized) return unauthorized;
+
   try {
     const { spawn } = await import('child_process');
-    const child = spawn('node', ['scripts/clean-cache.js'], {
+    const child = spawn(process.execPath, ['scripts/clean-cache.js'], {
       cwd: process.cwd(),
       detached: true,
-      stdio: 'pipe',
+      stdio: 'ignore',
     });
 
-    // Don't wait for completion; return immediately
-    setTimeout(() => {
-      child.unref(); // Allow parent to exit without waiting
-    }, 100);
+    child.unref();
 
     return NextResponse.json(
       {
         status: 'cleanup_started',
-        message: 'Cache cleanup script initiated. Check /var/log/codex-clean.log for progress.',
+        message: 'Cache cleanup script initiated.',
         startedAt: new Date().toISOString(),
       },
       { status: 202 } // 202 Accepted (async operation)

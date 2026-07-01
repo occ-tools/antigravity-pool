@@ -3,8 +3,25 @@ import type { Account } from '@prisma/client';
 import { ProxyAgent, fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import {
+  DEFAULT_MODEL_ID,
+  HEALTH_CHECK_MODEL_ID,
+  MODEL_METADATA,
+  PUBLIC_MODEL_IDS,
+  isPublicModelId,
+  type PublicModelId,
+} from '@/lib/modelCatalog';
 
 const execAsync = promisify(exec);
+
+export {
+  DEFAULT_MODEL_ID,
+  HEALTH_CHECK_MODEL_ID,
+  MODEL_METADATA,
+  PUBLIC_MODEL_IDS,
+  isPublicModelId,
+  type PublicModelId,
+};
 
 // Load proxy settings from environment
 const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
@@ -20,13 +37,26 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
   }
 }
 
+function positiveIntegerEnv(name: string, fallback: number, min = 1) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+
+  const value = Number(raw);
+  if (Number.isInteger(value) && value >= min) return value;
+
+  if (typeof window === 'undefined') {
+    console.warn(`[Antigravity Pool] Ignoring invalid ${name}=${raw}; using ${fallback}.`);
+  }
+  return fallback;
+}
+
 // Timeouts and slot controls
-export const ANTIGRAVITY_TIMEOUT_MS = Number(process.env.ANTIGRAVITY_POOL_TIMEOUT_MS || 120_000);
-export const ACCOUNT_LEASE_MS = Number(process.env.ANTIGRAVITY_POOL_ACCOUNT_LEASE_MS || 180_000);
-export const ACCOUNT_ACQUIRE_TIMEOUT_MS = Number(process.env.ANTIGRAVITY_POOL_ACQUIRE_TIMEOUT_MS || 15_000);
-export const ACCOUNT_ACQUIRE_POLL_MS = Number(process.env.ANTIGRAVITY_POOL_ACQUIRE_POLL_MS || 100);
-export const ACCOUNT_SLOTS_PER_ACCOUNT = Number(process.env.ANTIGRAVITY_POOL_SLOTS_PER_ACCOUNT || 3);
-export const ACCOUNT_GLOBAL_SLOTS = Number(process.env.ANTIGRAVITY_POOL_GLOBAL_SLOTS || 12);
+export const ANTIGRAVITY_TIMEOUT_MS = positiveIntegerEnv('ANTIGRAVITY_POOL_TIMEOUT_MS', 120_000, 1_000);
+export const ACCOUNT_LEASE_MS = positiveIntegerEnv('ANTIGRAVITY_POOL_ACCOUNT_LEASE_MS', 180_000, 1_000);
+export const ACCOUNT_ACQUIRE_TIMEOUT_MS = positiveIntegerEnv('ANTIGRAVITY_POOL_ACQUIRE_TIMEOUT_MS', 15_000, 100);
+export const ACCOUNT_ACQUIRE_POLL_MS = positiveIntegerEnv('ANTIGRAVITY_POOL_ACQUIRE_POLL_MS', 100, 10);
+export const ACCOUNT_SLOTS_PER_ACCOUNT = positiveIntegerEnv('ANTIGRAVITY_POOL_SLOTS_PER_ACCOUNT', 3);
+export const ACCOUNT_GLOBAL_SLOTS = positiveIntegerEnv('ANTIGRAVITY_POOL_GLOBAL_SLOTS', 12);
 
 export type AccountStatus = 'active' | 'exhausted' | 'invalid';
 export type QuotaStatus = 'available' | 'exhausted' | 'unknown';
@@ -41,27 +71,32 @@ export interface AntigravityResult {
 
 // Model mapping for converting standard OpenAI-compatible requests to Google's daily companion models
 export const MODEL_MAP: Record<string, string> = {
-  'gemini-3-flash': 'gemini-3-flash',
-  'gemini-3.5-flash-low': 'gemini-3.5-flash-low',
+  'gemini-3.1-pro-high': 'gemini-3.1-pro-high',
+  'gemini-3.1-pro-medium': 'gemini-3.1-pro-medium',
   'gemini-3.1-pro-low': 'gemini-3.1-pro-low',
-  'gemini-2.5-pro': 'gemini-2.5-pro',
+  'gemini-3.5-flash-high': 'gemini-3.5-flash-high',
+  'gemini-3.5-flash-medium': 'gemini-3.5-flash-medium',
+  'gemini-3.5-flash-low': 'gemini-3.5-flash-low',
   'claude-sonnet-4-6': 'claude-sonnet-4-6',
   'claude-opus-4-6-thinking': 'claude-opus-4-6-thinking',
-  'gemini-2.5-flash': 'gemini-2.5-flash',
 
   // Fallbacks
-  'gemini-1.5-flash': 'gemini-3-flash',
-  'gemini-1.5-pro': 'gemini-3.1-pro-low',
+  'gemini-1.5-flash': 'gemini-3.5-flash-low',
+  'gemini-1.5-pro': 'gemini-3.1-pro-high',
   'claude-3-5-sonnet': 'claude-sonnet-4-6',
   'claude-3-5-sonnet-v2': 'claude-sonnet-4-6',
-  'claude-3-5-haiku': 'gemini-3-flash',
+  'claude-3-5-haiku': 'gemini-3.5-flash-low',
   'claude-3-opus': 'claude-opus-4-6-thinking',
-  'gpt-4o-mini': 'gemini-3-flash',
-  'gpt-4o': 'gemini-3.1-pro-low',
-  'gpt-4': 'gemini-3.1-pro-low',
-  'o1-mini': 'gemini-3-flash',
-  'o1-preview': 'gemini-3.1-pro-low',
+  'gpt-4o-mini': 'gemini-3.5-flash-low',
+  'gpt-4o': 'gemini-3.1-pro-high',
+  'gpt-4': 'gemini-3.1-pro-high',
+  'o1-mini': 'gemini-3.5-flash-low',
+  'o1-preview': 'gemini-3.1-pro-high',
 };
+
+export function getModelOwner(modelId: string) {
+  return modelId.startsWith('claude-') ? 'anthropic-vertex' : 'google-daily-preview';
+}
 
 export function getTargetModel(modelName: string): string {
   const normalized = modelName.toLowerCase();
@@ -70,7 +105,7 @@ export function getTargetModel(modelName: string): string {
       return val;
     }
   }
-  return 'gemini-3-flash'; // Fallback default
+  return DEFAULT_MODEL_ID;
 }
 
 // Global Memory Cache for Access Tokens to prevent hitting refresh endpoints constantly
@@ -80,10 +115,47 @@ interface CachedToken {
 }
 const tokenCache = new Map<string, CachedToken>();
 
+function createTimeoutSignal(parentSignal?: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const onAbort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(parentSignal?.reason);
+    }
+  };
+
+  if (parentSignal?.aborted) {
+    onAbort();
+  } else {
+    parentSignal?.addEventListener('abort', onAbort, { once: true });
+  }
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ANTIGRAVITY_TIMEOUT_MS);
+
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    cleanup() {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 /**
  * Performs OAuth direct refresh token grant flow
  */
 export async function refreshAccessToken(refreshToken: string): Promise<{ access_token: string; expires_in: number }> {
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured before refreshing OAuth tokens.');
+  }
+
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -316,6 +388,7 @@ export async function runAntigravityStream(
   let responseText = '';
   let emittedText = false;
 
+  const timeoutSignal = createTimeoutSignal(signal);
   try {
     const response = await fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse', {
       method: 'POST',
@@ -325,7 +398,7 @@ export async function runAntigravityStream(
         'User-Agent': 'antigravity',
       },
       body: JSON.stringify(body),
-      signal,
+      signal: timeoutSignal.signal,
       dispatcher: proxyAgent,
     } as any);
 
@@ -340,9 +413,39 @@ export async function runAntigravityStream(
       };
     }
 
-    const reader = response.body!.getReader();
+    if (!response.body) {
+      return { ok: false, message: 'Upstream returned an empty response body', emittedText };
+    }
+
+    const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let partialLine = '';
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) return;
+
+      const jsonStr = trimmed.substring(6).trim();
+      if (jsonStr === '[DONE]') return;
+
+      try {
+        const data = JSON.parse(jsonStr);
+        const candidates = data?.response?.candidates;
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          const parts = candidates[0]?.content?.parts;
+          if (Array.isArray(parts) && parts.length > 0) {
+            const text = parts[0]?.text || '';
+            if (text) {
+              responseText += text;
+              emittedText = true;
+              if (onText) onText(text);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to parse SSE JSON chunk:', jsonStr, err);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -353,39 +456,21 @@ export async function runAntigravityStream(
       partialLine = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        
-        const jsonStr = trimmed.substring(6).trim();
-        if (jsonStr === '[DONE]') continue;
-
-        try {
-          const data = JSON.parse(jsonStr);
-          const candidates = data?.response?.candidates;
-          if (Array.isArray(candidates) && candidates.length > 0) {
-            const parts = candidates[0]?.content?.parts;
-            if (Array.isArray(parts) && parts.length > 0) {
-              const text = parts[0]?.text || '';
-              if (text) {
-                responseText += text;
-                emittedText = true;
-                if (onText) onText(text);
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Failed to parse SSE JSON chunk:', jsonStr, err);
-        }
+        handleLine(line);
       }
     }
 
+    if (partialLine) handleLine(partialLine);
+
     return { ok: true, text: responseText, emittedText };
   } catch (error: any) {
-    if (error.name === 'AbortError') {
-      return { ok: false, message: 'Request aborted', emittedText };
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+      return { ok: false, message: timeoutSignal.timedOut ? `Request timed out after ${ANTIGRAVITY_TIMEOUT_MS}ms` : 'Request aborted', emittedText };
     }
     console.error(`[Request Exception - Account ${account.name}]:`, error.message);
     return { ok: false, message: error.message, accountStatus: classifyAccountStatus(502, error.message), emittedText };
+  } finally {
+    timeoutSignal.cleanup();
   }
 }
 
@@ -402,14 +487,9 @@ export async function runAIStudioStream(
 ): Promise<AntigravityResult> {
   // Map Google companion models to official AI Studio models
   let targetModel = getTargetModel(modelName);
-  if (targetModel === 'gemini-3-flash') {
+  if (targetModel.startsWith('gemini-3.5-flash')) {
     targetModel = 'gemini-2.5-flash';
-  } else if (
-    targetModel === 'gemini-3.1-pro-low' ||
-    targetModel === 'gemini-3.5-flash-low' ||
-    targetModel === 'claude-sonnet-4-6' ||
-    targetModel === 'claude-opus-4-6-thinking'
-  ) {
+  } else if (targetModel.startsWith('gemini-3.1-pro') || targetModel.startsWith('claude-')) {
     targetModel = 'gemini-2.5-pro';
   }
 
@@ -443,6 +523,7 @@ export async function runAIStudioStream(
   let responseText = '';
   let emittedText = false;
 
+  const timeoutSignal = createTimeoutSignal(signal);
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -451,7 +532,7 @@ export async function runAIStudioStream(
         'User-Agent': 'antigravity',
       },
       body: JSON.stringify(body),
-      signal,
+      signal: timeoutSignal.signal,
       dispatcher: proxyAgent,
     } as any);
 
@@ -465,9 +546,39 @@ export async function runAIStudioStream(
       };
     }
 
-    const reader = response.body!.getReader();
+    if (!response.body) {
+      return { ok: false, message: 'AI Studio returned an empty response body', emittedText };
+    }
+
+    const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let partialLine = '';
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) return;
+
+      const jsonStr = trimmed.substring(6).trim();
+      if (jsonStr === '[DONE]') return;
+
+      try {
+        const data = JSON.parse(jsonStr);
+        const candidates = data?.candidates || data?.response?.candidates;
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          const parts = candidates[0]?.content?.parts;
+          if (Array.isArray(parts) && parts.length > 0) {
+            const text = parts[0]?.text || '';
+            if (text) {
+              responseText += text;
+              emittedText = true;
+              if (onText) onText(text);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to parse AI Studio SSE JSON chunk:', jsonStr, err);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -478,38 +589,20 @@ export async function runAIStudioStream(
       partialLine = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        
-        const jsonStr = trimmed.substring(6).trim();
-        if (jsonStr === '[DONE]') continue;
-
-        try {
-          const data = JSON.parse(jsonStr);
-          const candidates = data?.candidates || data?.response?.candidates;
-          if (Array.isArray(candidates) && candidates.length > 0) {
-            const parts = candidates[0]?.content?.parts;
-            if (Array.isArray(parts) && parts.length > 0) {
-              const text = parts[0]?.text || '';
-              if (text) {
-                responseText += text;
-                emittedText = true;
-                if (onText) onText(text);
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Failed to parse AI Studio SSE JSON chunk:', jsonStr, err);
-        }
+        handleLine(line);
       }
     }
 
+    if (partialLine) handleLine(partialLine);
+
     return { ok: true, text: responseText, emittedText };
   } catch (error: any) {
-    if (error.name === 'AbortError') {
-      return { ok: false, message: 'Request aborted', emittedText };
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+      return { ok: false, message: timeoutSignal.timedOut ? `Request timed out after ${ANTIGRAVITY_TIMEOUT_MS}ms` : 'Request aborted', emittedText };
     }
     console.error(`[AI Studio Exception]:`, error.message);
     return { ok: false, message: error.message, emittedText };
+  } finally {
+    timeoutSignal.cleanup();
   }
 }

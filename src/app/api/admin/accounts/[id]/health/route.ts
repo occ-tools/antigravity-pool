@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/adminAuth';
 import {
   quotaObservationForFailure,
   quotaObservationForSuccess,
+  HEALTH_CHECK_MODEL_ID,
   runAntigravityStream,
   runAIStudioStream,
 } from '@/lib/antigravityPool';
@@ -24,7 +25,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         });
         return NextResponse.json({ ok: false, status: updated.status, message: 'FALLBACK_GEMINI_API_KEY is not configured in .env' }, { status: 409 });
       }
-      const result = await runAIStudioStream(fallbackKey, 'gemini-3-flash', 'Reply with exactly: ok');
+      const result = await runAIStudioStream(fallbackKey, HEALTH_CHECK_MODEL_ID, 'Reply with exactly: ok');
       if (result.ok) {
         const updated = await prisma.account.update({
           where: { id },
@@ -53,7 +54,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return NextResponse.json({ ok: false, status: updated.status, message: 'Refresh token is missing' }, { status: 409 });
     }
 
-    const result = await runAntigravityStream(account, 'gemini-3-flash', 'Reply with exactly: ok');
+    const result = await runAntigravityStream(account, HEALTH_CHECK_MODEL_ID, 'Reply with exactly: ok');
     if (result.ok) {
       const updated = await prisma.account.update({
         where: { id },
@@ -72,7 +73,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       },
     });
 
-    return NextResponse.json({ ok: false, status: updated.status, message: result.message }, { status: 502 });
+    return NextResponse.json({ ok: false, status: updated.status, message: result.message }, { status: statusCode });
   } catch (error) {
     console.error('Health check failed:', error);
     const message = error instanceof Error ? error.message : 'Health check failed';

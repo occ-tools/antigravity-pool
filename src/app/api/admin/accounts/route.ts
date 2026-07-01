@@ -9,6 +9,9 @@ export async function GET(req: Request) {
   if (unauthorized) return unauthorized;
 
   try {
+    const now = new Date();
+    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lte: now } } });
+
     if (process.env.FALLBACK_GEMINI_API_KEY) {
       await prisma.account.upsert({
         where: { id: 'fallback-ai-studio' },
@@ -25,6 +28,13 @@ export async function GET(req: Request) {
 
     const accounts = await prisma.account.findMany({
       orderBy: { createdAt: 'desc' },
+      include: {
+        leases: {
+          where: { leaseUntil: { gt: now } },
+          orderBy: { leaseUntil: 'desc' },
+          take: 1,
+        },
+      },
     });
 
     const normalized = accounts.map((account) => ({
@@ -39,7 +49,7 @@ export async function GET(req: Request) {
       quotaResetAt: account.quotaResetAt ? account.quotaResetAt.toISOString() : null,
       quotaMessage: account.quotaMessage,
       quotaCheckedAt: account.quotaCheckedAt ? account.quotaCheckedAt.toISOString() : null,
-      leaseUntil: account.leaseUntil ? account.leaseUntil.toISOString() : null,
+      leaseUntil: account.leases[0]?.leaseUntil.toISOString() ?? null,
     }));
 
     return NextResponse.json(normalized);

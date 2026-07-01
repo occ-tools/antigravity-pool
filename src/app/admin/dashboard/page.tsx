@@ -1,8 +1,19 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { AccountSummary, RequestLogSummary } from '@/lib/types';
+
+type ThemeMode = 'light' | 'dark';
+
+function initialTheme(fallback: ThemeMode): ThemeMode {
+  try {
+    const saved = window.localStorage.getItem('antigravity-theme');
+    return saved === 'dark' || saved === 'light' ? saved : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 type MetricsData = {
   timestamp: string;
@@ -29,6 +40,7 @@ export default function AdminDashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>('dark');
 
   // Form states
   const [name, setName] = useState('');
@@ -37,7 +49,7 @@ export default function AdminDashboard() {
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       const [accRes, metRes, logRes] = await Promise.all([
         fetch('/api/admin/accounts'),
@@ -50,12 +62,35 @@ export default function AdminDashboard() {
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadData();
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadData]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTheme((currentTheme) => {
+        const savedTheme = initialTheme(currentTheme);
+        return savedTheme === currentTheme ? currentTheme : savedTheme;
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, []);
+
+  const setThemeMode = (nextTheme: ThemeMode) => {
+    setTheme(nextTheme);
+    try {
+      window.localStorage.setItem('antigravity-theme', nextTheme);
+    } catch (err) {
+      console.warn('Failed to persist theme mode:', err);
+    }
+  };
 
   const handleCleanup = async () => {
     if (!confirm('运行缓存清理，释放磁盘空间？')) return;
@@ -83,8 +118,14 @@ export default function AdminDashboard() {
       const res = await fetch('/api/admin/accounts/import-local', { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        setSuccessMsg(data.message || '本地 active 凭据成功导入！');
-        loadData();
+        const accountId = typeof data?.account?.id === 'string' ? data.account.id : '';
+        if (accountId) {
+          setSuccessMsg(`${data.message || '本地 Active 凭据成功导入'}，正在自检...`);
+          await checkHealth(accountId, 'import');
+        } else {
+          setSuccessMsg(data.message || '本地 Active 凭据成功导入');
+          await loadData();
+        }
       } else {
         setErrorMsg(data.error || '未能在本地找到可用凭据。请确保已登录并生成凭据。');
       }
@@ -147,22 +188,24 @@ export default function AdminDashboard() {
     }
   };
 
-  const checkHealth = async (id: string) => {
+  const checkHealth = async (id: string, source: 'manual' | 'import' = 'manual') => {
     setCheckingId(id);
-    setErrorMsg('');
-    setSuccessMsg('');
+    if (source === 'manual') {
+      setErrorMsg('');
+      setSuccessMsg('');
+    }
 
     try {
       const res = await fetch(`/api/admin/accounts/${id}/health`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        setSuccessMsg(`健康检查通过: ${data.message}`);
+        setSuccessMsg(source === 'import' ? `导入完成，自检通过: ${data.message || 'ok'}` : `健康检查通过: ${data.message || 'ok'}`);
       } else {
-        setErrorMsg(`健康检查失败: ${data.message || '错误'}`);
+        setErrorMsg(source === 'import' ? `导入成功，但自检失败: ${data.message || data.error || '错误'}` : `健康检查失败: ${data.message || data.error || '错误'}`);
       }
-      loadData();
+      await loadData();
     } catch (err) {
-      setErrorMsg(`健康检查请求失败: ${err}`);
+      setErrorMsg(source === 'import' ? `导入成功，但自检请求失败: ${err}` : `健康检查请求失败: ${err}`);
     } finally {
       setCheckingId(null);
     }
@@ -190,7 +233,7 @@ export default function AdminDashboard() {
   };
 
   return (
-    <main className="min-h-screen md:h-screen w-screen bg-slate-950 text-slate-100 font-sans md:overflow-hidden flex flex-col relative">
+    <main className={`dashboard-shell theme-${theme} min-h-screen md:h-screen w-screen bg-slate-950 text-slate-100 font-sans md:overflow-hidden flex flex-col relative`}>
       {/* Background glowing gradients */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className="absolute top-0 right-1/4 w-[500px] h-[500px] rounded-full bg-indigo-900/10 blur-[120px]" />
@@ -214,6 +257,35 @@ export default function AdminDashboard() {
             <p className="text-sm text-slate-400 mt-1.5">Google/Gemini 账号流转池，自动获取及缓存访问令牌</p>
           </div>
           <div className="flex items-center gap-2">
+            <div className="theme-toggle" aria-label="Theme mode">
+              <button
+                type="button"
+                className={theme === 'light' ? 'active' : ''}
+                onClick={() => setThemeMode('light')}
+                aria-label="亮色模式"
+                aria-pressed={theme === 'light'}
+                data-theme-mode="light"
+                title="亮色模式"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={theme === 'dark' ? 'active' : ''}
+                onClick={() => setThemeMode('dark')}
+                aria-label="暗色模式"
+                aria-pressed={theme === 'dark'}
+                data-theme-mode="dark"
+                title="暗色模式"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path d="M21 12.79A8.5 8.5 0 1 1 11.21 3 6.5 6.5 0 0 0 21 12.79Z" />
+                </svg>
+              </button>
+            </div>
             <button
               onClick={() => setShowAddModal(true)}
               className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] text-center cursor-pointer select-none"

@@ -14,6 +14,9 @@ import {
   ACCOUNT_ACQUIRE_POLL_MS,
   ACCOUNT_SLOTS_PER_ACCOUNT,
   ACCOUNT_GLOBAL_SLOTS,
+  DEFAULT_MODEL_ID,
+  MODEL_METADATA,
+  isPublicModelId,
   type AntigravityOptions,
 } from '@/lib/antigravityPool';
 
@@ -162,6 +165,26 @@ function toolProtocolPrompt(tools: FunctionTool[], body: ChatCompletionRequest):
   ].join('\n');
 }
 
+function responseFormatInstruction(responseFormat: unknown): string {
+  if (!responseFormat || typeof responseFormat !== 'object') return '';
+
+  const format = responseFormat as { type?: unknown; json_schema?: unknown };
+  if (format.type === 'json_object') {
+    return 'The client requested JSON mode. Return exactly one valid JSON object and no surrounding prose or markdown.';
+  }
+
+  if (format.type === 'json_schema') {
+    const schema = safeStringify(format.json_schema ?? {});
+    return [
+      'The client requested structured JSON output.',
+      'Return exactly one JSON value that conforms to this schema metadata, with no surrounding prose or markdown:',
+      schema,
+    ].join('\n');
+  }
+
+  return '';
+}
+
 function formatMessage(message: ChatMessage): string {
   const role = message.role ?? 'user';
   if (role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
@@ -189,7 +212,11 @@ function formatMessage(message: ChatMessage): string {
 function buildPrompt(body: ChatCompletionRequest): string {
   const messages = body.messages ?? [];
   const tools = normalizedTools(body);
-  const parts = [toolProtocolPrompt(tools, body), ...messages.map(formatMessage)].filter(Boolean);
+  const parts = [
+    toolProtocolPrompt(tools, body),
+    responseFormatInstruction(body.response_format),
+    ...messages.map(formatMessage),
+  ].filter(Boolean);
   return parts.join('\n\n');
 }
 
@@ -288,6 +315,30 @@ function textUsage(promptText: string, completionText: string) {
     completion_tokens: completionTokens,
     total_tokens: promptTokens + completionTokens,
   };
+}
+
+function statusCodeForAccountStatus(status?: string) {
+  if (status === 'exhausted') return 429;
+  if (status === 'invalid') return 401;
+  return 502;
+}
+
+function errorTypeForStatus(status: number) {
+  if (status === 429) return 'insufficient_quota';
+  if (status === 401 || status === 403) return 'invalid_request_error';
+  return 'proxy_error';
+}
+
+function maxOutputTokensForModel(modelName: string) {
+  const targetModel = getTargetModel(modelName);
+  return isPublicModelId(targetModel) ? MODEL_METADATA[targetModel].maxOutputTokens : undefined;
+}
+
+function normalizeMaxTokens(modelName: string, maxTokens?: number) {
+  if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens)) return undefined;
+  const normalized = Math.max(1, Math.floor(maxTokens));
+  const modelLimit = maxOutputTokensForModel(modelName);
+  return modelLimit ? Math.min(normalized, modelLimit) : normalized;
 }
 
 async function logRequest(accountId: string, model: string, statusCode: number, latency: number, promptTokens: number, completionTokens: number, error?: string) {
@@ -545,7 +596,7 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
             }
 
             lastMessage = result.message || 'Unknown error';
-            const code = result.accountStatus === 'exhausted' ? 429 : (result.accountStatus === 'invalid' ? 401 : 502);
+            const code = statusCodeForAccountStatus(result.accountStatus);
             await markAccountFailure(claim.account, code, lastMessage);
             await logRequest(claim.account.id, getTargetModel(model), code, latency, estimateTokens(promptText), estimateTokens(bufferedText), lastMessage);
 
@@ -722,7 +773,7 @@ function streamHeaders() {
 }
 
 function jsonError(message: string, status = 502) {
-  return NextResponse.json({ error: { message, type: 'proxy_error' } }, { status });
+  return NextResponse.json({ error: { message, type: errorTypeForStatus(status) } }, { status });
 }
 
 function sleep(ms: number) {
@@ -745,7 +796,7 @@ async function claimSlot(account: Account, now: Date) {
     if (existing) {
       // Transaction-safe updates
       const claimed = await prisma.accountLease.updateMany({
-        where: { id: existing.id, leaseUntil: { lt: now } },
+        where: { id: existing.id, leaseUntil: { lte: now } },
         data: { leaseUntil },
       });
       if (claimed.count === 1) {
@@ -773,7 +824,7 @@ async function acquireAccountClaim(excludedIds: Set<string>, signal?: AbortSigna
     if (signal?.aborted) return null;
 
     const now = new Date();
-    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lt: now } } });
+    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lte: now } } });
     const activeLeases = await prisma.accountLease.count({ where: { leaseUntil: { gt: now } } });
 
     if (activeLeases < ACCOUNT_GLOBAL_SLOTS) {
@@ -846,7 +897,7 @@ async function runPromptWithRetry(promptText: string, modelName: string, signal?
       }
 
       lastResult = result as any;
-      const code = result.accountStatus === 'exhausted' ? 429 : (result.accountStatus === 'invalid' ? 401 : 502);
+      const code = statusCodeForAccountStatus(result.accountStatus);
       await markAccountFailure(claim.account, code, result.message || '');
       await logRequest(claim.account.id, getTargetModel(modelName), code, latency, estimateTokens(promptText), 0, result.message);
     } finally {
@@ -892,8 +943,20 @@ function streamAntigravityText(promptText: string, model: string, signal: AbortS
       let completionText = '';
       let lastMessage = 'No active accounts available in the pool.';
       const startTime = Date.now();
+      let closed = false;
 
-      const send = (data: unknown) => controller.enqueue(encoder.encode(sseChunk(data)));
+      const send = (data: unknown) => {
+        if (!closed) controller.enqueue(encoder.encode(sseChunk(data)));
+      };
+      const closeWithDone = () => {
+        if (closed) return;
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+        closed = true;
+      };
+      const keepAlive = setInterval(() => {
+        if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'));
+      }, 10_000);
       const sendRole = () => {
         if (sentRole) return;
         sentRole = true;
@@ -952,20 +1015,18 @@ function streamAntigravityText(promptText: string, model: string, signal: AbortS
                 usage: textUsage(promptText, completionText || result.text || ''),
               });
               await logRequest(claim.account.id, getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(completionText || result.text || ''));
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
+              closeWithDone();
               return;
             }
 
             lastMessage = result.message || 'Unknown error';
-            const code = result.accountStatus === 'exhausted' ? 429 : (result.accountStatus === 'invalid' ? 401 : 502);
+            const code = statusCodeForAccountStatus(result.accountStatus);
             await markAccountFailure(claim.account, code, lastMessage);
             await logRequest(claim.account.id, getTargetModel(model), code, latency, estimateTokens(promptText), estimateTokens(completionText), lastMessage);
 
             if (attemptSentText) {
               send({ error: { message: lastMessage, type: 'proxy_error' } });
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
+              closeWithDone();
               return;
             }
           } finally {
@@ -1010,8 +1071,7 @@ function streamAntigravityText(promptText: string, model: string, signal: AbortS
               usage: textUsage(promptText, completionText || result.text || ''),
             });
             await logRequest('fallback-ai-studio', getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(completionText || result.text || ''));
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
+            closeWithDone();
             return;
           } else {
             await ensureFallbackAccount();
@@ -1023,13 +1083,13 @@ function streamAntigravityText(promptText: string, model: string, signal: AbortS
         if (!sentAnyText) {
           send({ error: { message: lastMessage, type: 'proxy_error' } });
         }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+        closeWithDone();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Internal Server Error';
         send({ error: { message, type: 'proxy_error' } });
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+        closeWithDone();
+      } finally {
+        clearInterval(keepAlive);
       }
     },
   });
@@ -1042,7 +1102,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as ChatCompletionRequest;
     const messages = body.messages ?? [];
     const stream = body.stream === true;
-    const model = body.model || 'gemini-3-flash';
+    const model = body.model || DEFAULT_MODEL_ID;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json({ error: { message: 'messages must be a non-empty array' } }, { status: 400 });
@@ -1054,7 +1114,7 @@ export async function POST(req: Request) {
     
     // Clean up expired leases first
     const now = new Date();
-    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lt: now } } });
+    await prisma.accountLease.deleteMany({ where: { leaseUntil: { lte: now } } });
 
     const activeAccountCount = await prisma.account.count({
       where: { OR: [{ status: 'active' }, { status: 'exhausted', quotaResetAt: { lte: now } }] },
@@ -1069,7 +1129,7 @@ export async function POST(req: Request) {
 
     const options: AntigravityOptions = {
       temperature: body.temperature,
-      maxTokens: body.max_tokens,
+      maxTokens: normalizeMaxTokens(model, body.max_tokens),
       stop: Array.isArray(body.stop) ? body.stop : (typeof body.stop === 'string' ? [body.stop] : undefined),
     };
 
@@ -1082,7 +1142,7 @@ export async function POST(req: Request) {
     }
 
     const { result } = await runPromptWithRetry(promptText, model, req.signal, options);
-    if (!result.ok) return jsonError(result.message || 'Proxy request failed');
+    if (!result.ok) return jsonError(result.message || 'Proxy request failed', statusCodeForAccountStatus(result.accountStatus));
 
     const output = parseAssistantOutput(result.text || '', allowedToolNames);
     return completionResponse(output, model, promptText);

@@ -2,22 +2,29 @@
   "name": "antigravity-pool",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
-    "dev": "next dev -p 18080",
+    "dev": "next dev -H 127.0.0.1 -p 18080",
     "build": "next build",
-    "start": "next start -p 18080",
+    "start": "next start -H 127.0.0.1 -p 18080",
     "lint": "eslint",
+    "verify": "npm run lint && npm run build",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
     "clean:cache": "node scripts/clean-cache.js",
     "monitor:429": "node scripts/monitor-429.js",
+    "accounts:view": "node scripts/view-accounts.js",
     "login": "node scripts/login.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "https-proxy-agent": "^9.0.0",
-    "next": "16.2.6",
+    "next": "16.2.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "undici": "^8.4.0"
+    "undici": "^8.5.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -25,9 +32,13 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.2.9",
     "prisma": "^5.22.0",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "js-yaml": "^5.2.0",
+    "postcss": "^8.5.15"
   }
 }

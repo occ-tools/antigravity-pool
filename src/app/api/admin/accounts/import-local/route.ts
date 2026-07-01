@@ -36,11 +36,22 @@ export async function POST(req: Request) {
       );
     }
 
+    let accessToken = '';
+    try {
+      const refreshed = await refreshAccessToken(refreshToken);
+      accessToken = refreshed.access_token;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '无法刷新本地凭据';
+      return NextResponse.json(
+        { error: `本地凭据已读取，但 OAuth 刷新失败：${message}` },
+        { status: 409 }
+      );
+    }
+
     // Resolve email dynamically
     let email = 'unknown@gmail.com';
     try {
-      const { access_token } = await refreshAccessToken(refreshToken);
-      email = await fetchUserEmail(access_token);
+      email = await fetchUserEmail(accessToken);
     } catch (emailErr: any) {
       console.warn('Failed to dynamically resolve email for imported credentials:', emailErr.message);
     }
@@ -51,14 +62,27 @@ export async function POST(req: Request) {
     });
 
     if (existing) {
+      const updated = await prisma.account.update({
+        where: { id: existing.id },
+        data: {
+          name: email !== 'unknown@gmail.com' ? `Keyring Account (${email.split('@')[0]})` : existing.name,
+          email: email !== 'unknown@gmail.com' ? email : existing.email,
+          status: 'active',
+          quotaStatus: 'unknown',
+          quotaResetAt: null,
+          quotaMessage: null,
+          quotaCheckedAt: null,
+        },
+      });
+
       return NextResponse.json({
         success: true,
-        message: '凭据已存在于数据库中',
+        message: '凭据已存在，已刷新账号状态',
         account: {
-          id: existing.id,
-          name: existing.name,
-          email: existing.email,
-          status: existing.status,
+          id: updated.id,
+          name: updated.name,
+          email: updated.email,
+          status: updated.status,
         }
       });
     }

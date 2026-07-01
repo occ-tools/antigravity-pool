@@ -69,7 +69,11 @@ graph TD
 # SQLite 数据库路径
 DATABASE_URL="file:./dev.db"
 
-# 远程访问管理员面板的安全凭证（localhost 访问时会自动免密）
+# Google OAuth 客户端配置（刷新 Google 账号 Access Token 必需）
+GOOGLE_CLIENT_ID="your_google_oauth_client_id"
+GOOGLE_CLIENT_SECRET="your_google_oauth_client_secret"
+
+# 远程访问管理员面板的安全凭证（localhost/127.0.0.1 访问时会自动免密）
 ADMIN_TOKEN="your_secure_admin_token"
 
 # 本地调试代理（如果是大陆环境，需要配置 clash 等代理）
@@ -94,17 +98,22 @@ ANTIGRAVITY_POOL_GLOBAL_SLOTS=12             # 全局并发上限通道数
 ## 🛠️ 快速启动指南
 
 ### 1. 安装项目依赖
+请使用 Node.js `>=22.19.0`。当前依赖中的 `undici` 安全修复版本需要该运行时下限。
+
 ```bash
 npm install
 ```
 
-### 2. 初始化数据库
+### 2. 准备环境配置
+复制 `.env.example` 为 `.env`，然后填入 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`，以及需要远程访问时的 `ADMIN_TOKEN`。
+
+### 3. 初始化数据库
 项目采用 Prisma ORM 配合 SQLite。请执行以下指令生成 Prisma 客户端：
 ```bash
-npx prisma generate
+npm run db:generate
 ```
 
-### 3. 运行服务
+### 4. 运行服务
 * **开发模式**：
   ```bash
   npm run dev
@@ -120,6 +129,15 @@ npx prisma generate
 启动后，在浏览器中访问管理面板：
 👉 **[http://localhost:18080/admin/dashboard](http://localhost:18080/admin/dashboard)**
 
+默认启动脚本只监听 `127.0.0.1`，避免误把包含 refresh token 的管理面板暴露到局域网或公网。如果确实需要远程访问，请先配置高强度 `ADMIN_TOKEN`，再显式使用 `next dev -H 0.0.0.0 -p 18080` 或 `next start -H 0.0.0.0 -p 18080`。
+
+### 5. 验证项目
+提交或发布前建议运行：
+```bash
+npm run verify
+```
+该命令会依次执行 ESLint 与生产构建。
+
 ---
 
 ## 🔑 账户管理与登录
@@ -130,9 +148,15 @@ npx prisma generate
 ### 脚本自动捕获登录
 您也可以运行项目中的登录脚本来授权新账号：
 ```bash
-node scripts/login.js
+npm run login
 ```
 该脚本会在本地 `8085` 端口拉起一个临时的 OAuth 接收服务并自动打开浏览器。在浏览器中选择您需要添加的 Google 账户进行授权，授权完毕后，Refresh Token 将被自动捕获并存入 SQLite 数据库。
+
+### 查看账号状态
+```bash
+npm run accounts:view
+```
+该命令默认会脱敏 `refreshToken`。只有在私有终端中确实需要排查凭据原文时，才使用 `npm run accounts:view -- --show-secrets`。
 
 ---
 
@@ -144,14 +168,16 @@ node scripts/login.js
 - **API Key**: 任意填写（本地 localhost 环回访问会自动放行，如：`dummy`）
 - **模型 (Model)**: 推荐填写以 `gemini-` 开头的模型。代理池会自动对不同的 OpenAI 模型请求进行翻译映射：
 
-| 客户端请求模型 (示例) | 流转池实际调用模型 (Daily Preview) | 上游接口类型 |
-| :--- | :--- | :--- |
-| `gemini-3-flash` / `gemini-1.5-flash` | `gemini-3-flash` | Google Companion |
-| `gemini-3.5-flash-low` | `gemini-3.5-flash-low` | Google Companion |
-| `gemini-3.1-pro-low` / `gemini-1.5-pro` | `gemini-3.1-pro-low` | Google Companion |
-| `gemini-2.5-pro` | `gemini-2.5-pro` | Google Companion |
-| `claude-3-5-sonnet` | `claude-sonnet-4-6` | Anthropic Vertex |
-| `claude-3-opus` | `claude-opus-4-6-thinking` | Anthropic Vertex |
+| 客户端请求模型 (示例) | 流转池实际调用模型 | 上游接口类型 | 上下文长度 | 最大输出 |
+| :--- | :--- | :--- | :--- | :--- |
+| `gemini-3.5-flash-high` | `gemini-3.5-flash-high` | Google Daily Preview | `1,048,576` | `65,536` |
+| `gemini-3.5-flash-medium` | `gemini-3.5-flash-medium` | Google Daily Preview | `1,048,576` | `65,536` |
+| `gemini-3.5-flash-low` / `gemini-1.5-flash` | `gemini-3.5-flash-low` | Google Daily Preview | `1,048,576` | `65,536` |
+| `gemini-3.1-pro-high` / `gemini-1.5-pro` | `gemini-3.1-pro-high` | Google Daily Preview | `1,048,576` | `65,536` |
+| `gemini-3.1-pro-medium` | `gemini-3.1-pro-medium` | Google Daily Preview | `1,048,576` | `65,536` |
+| `gemini-3.1-pro-low` | `gemini-3.1-pro-low` | Google Daily Preview | `1,048,576` | `65,536` |
+| `claude-3-5-sonnet` | `claude-sonnet-4-6` | Anthropic Vertex | `1,000,000` | `128,000` |
+| `claude-3-opus` | `claude-opus-4-6-thinking` | Anthropic Vertex | `1,000,000` | `128,000` |
 
 ---
 
@@ -182,4 +208,4 @@ node scripts/login.js
 ## 🛡️ 安全与隐私警告
 
 1. **敏感凭据保护**：Prisma SQLite 数据库文件 `dev.db` 包含池内各账号的 `refreshToken`。此凭据拥有访问对应 Google 账号的权限。**请绝对不要将 `dev.db`、`.env` 或包含账号信息的日志提交到 Git 仓库或公开上传。**
-2. **本地运行建议**：推荐在本地 `127.0.0.1` 环回连接上私有运行。如果需要部署在公网，**务必在 `.env` 中设置高强度的 `ADMIN_TOKEN`**，以防账号池管理页面被恶意扫描和盗用。
+2. **本地运行建议**：默认脚本已绑定 `127.0.0.1` 环回地址。如果需要部署到局域网或公网，**务必在 `.env` 中设置高强度的 `ADMIN_TOKEN`**，并确认反向代理正确传递客户端来源信息，以防账号池管理页面被恶意扫描和盗用。

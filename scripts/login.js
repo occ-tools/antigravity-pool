@@ -6,7 +6,7 @@
  */
 
 const http = require('http');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
@@ -77,6 +77,26 @@ const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchP
   access_type: 'offline',
   prompt: 'consent'
 }).toString();
+
+function openBrowser(url) {
+  const command = process.platform === 'win32'
+    ? 'cmd'
+    : process.platform === 'darwin'
+      ? 'open'
+      : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.unref();
+  } catch {
+    // Ignore browser open errors; the URL is printed below for manual use.
+  }
+}
 
 console.log('==================================================');
 console.log('🔑  Google Account Login for Antigravity Pool');
@@ -184,15 +204,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, 'localhost', () => {
   console.log(`🔗 Opening browser for Google login...\n`);
   console.log(`If the browser did not open automatically, please open this link manually:\n${authUrl}\n`);
-  
-  // Auto open browser depending on OS
-  const openCmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  exec(`${openCmd} "${authUrl.replace(/&/g, '^&')}"`, (err) => {
-    if (err) {
-      // Ignore open error
-    }
-  });
+
+  openBrowser(authUrl);
 });

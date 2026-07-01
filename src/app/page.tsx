@@ -1,162 +1,205 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { DEFAULT_MODEL_ID, MODEL_METADATA, PUBLIC_MODEL_IDS, type PublicModelId } from '@/lib/modelCatalog';
 
-const hermesConfig = `model:
-  default: gemini-3-flash
+type ThemeMode = 'light' | 'dark';
+
+function initialTheme(fallback: ThemeMode): ThemeMode {
+  try {
+    const saved = window.localStorage.getItem('antigravity-theme');
+    return saved === 'dark' || saved === 'light' ? saved : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function formatNumber(value: number) {
+  return value.toLocaleString('en-US');
+}
+
+function ThemeToggle({ theme, onThemeChange }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void }) {
+  return (
+    <div className="theme-toggle" aria-label="Theme mode">
+      <button
+        type="button"
+        className={theme === 'light' ? 'active' : ''}
+        onClick={() => onThemeChange('light')}
+        aria-label="亮色模式"
+        aria-pressed={theme === 'light'}
+        data-theme-mode="light"
+        title="亮色模式"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={theme === 'dark' ? 'active' : ''}
+        onClick={() => onThemeChange('dark')}
+        aria-label="暗色模式"
+        aria-pressed={theme === 'dark'}
+        data-theme-mode="dark"
+        title="暗色模式"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path d="M21 12.79A8.5 8.5 0 1 1 11.21 3 6.5 6.5 0 0 0 21 12.79Z" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+export default function LandingPage() {
+  const [selectedModelId, setSelectedModelId] = useState<PublicModelId>(DEFAULT_MODEL_ID);
+  const [copied, setCopied] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>('light');
+
+  const selectedModel = useMemo(
+    () => MODEL_METADATA[selectedModelId],
+    [selectedModelId],
+  );
+
+  const config = useMemo(() => `model:
+  default: ${selectedModelId}
   provider: custom
   base_url: http://localhost:18080/api/v1
   api_key: dummy_token
-  context_length: 1048576`;
+  context_length: ${selectedModel.contextLength}
+  max_output_tokens: ${selectedModel.maxOutputTokens}`, [selectedModel, selectedModelId]);
 
-const availableModels = [
-  { name: 'Gemini 3 Flash (High)', id: 'gemini-3-flash', type: 'Google Daily Preview', color: 'from-blue-400 to-indigo-500' },
-  { name: 'Gemini 3.5 Flash (Medium)', id: 'gemini-3.5-flash-low', type: 'Google Daily Preview', color: 'from-indigo-400 to-purple-500' },
-  { name: 'Gemini 3.1 Pro (Low)', id: 'gemini-3.1-pro-low', type: 'Google Daily Preview', color: 'from-purple-400 to-pink-500' },
-  { name: 'Gemini 2.5 Pro', id: 'gemini-2.5-pro', type: 'Google Daily Preview', color: 'from-pink-400 to-rose-500' },
-  { name: 'Claude Sonnet 4.6 (Thinking)', id: 'claude-sonnet-4-6', type: 'Anthropic Vertex', color: 'from-orange-400 to-amber-500' },
-  { name: 'Claude Opus 4.6 (Thinking)', id: 'claude-opus-4-6-thinking', type: 'Anthropic Vertex', color: 'from-rose-400 to-orange-500' },
-];
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTheme((currentTheme) => {
+        const savedTheme = initialTheme(currentTheme);
+        return savedTheme === currentTheme ? currentTheme : savedTheme;
+      });
+    }, 0);
 
-export default function LandingPage() {
-  const [copied, setCopied] = useState(false);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const setThemeMode = (nextTheme: ThemeMode) => {
+    setTheme(nextTheme);
+    try {
+      window.localStorage.setItem('antigravity-theme', nextTheme);
+    } catch (err) {
+      console.warn('Failed to persist theme mode:', err);
+    }
+  };
 
   const copyConfig = async () => {
     try {
-      await navigator.clipboard.writeText(hermesConfig);
+      await navigator.clipboard.writeText(config);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      window.setTimeout(() => setCopied(false), 1600);
     } catch (err) {
       console.error('Failed to copy config:', err);
     }
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white relative overflow-hidden flex flex-col justify-between">
-      {/* Background glowing decorations */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[600px] opacity-30">
-          <div className="absolute -top-[30%] left-[5%] w-[600px] h-[600px] rounded-full bg-gradient-to-tr from-indigo-600 via-indigo-900 to-purple-900 blur-[130px]"></div>
-          <div className="absolute -top-[10%] right-[5%] w-[500px] h-[500px] rounded-full bg-gradient-to-bl from-fuchsia-800 via-purple-900 to-slate-950 blur-[130px]"></div>
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 h-[300px] opacity-10 bg-gradient-to-t from-indigo-900 to-transparent blur-[80px]"></div>
-      </div>
+    <main className={`home-shell theme-${theme}`}>
+      <div className="home-bg" aria-hidden="true" />
 
-      {/* Main Content Area */}
-      <div className="relative z-10 mx-auto max-w-5xl px-6 py-16 md:py-24 space-y-16 flex-1 flex flex-col justify-center">
-        {/* Header */}
-        <div className="text-center space-y-6">
-          <div className="inline-flex items-center gap-2 rounded-full bg-indigo-950/60 px-4 py-1.5 text-xs font-semibold text-indigo-300 border border-indigo-500/30 backdrop-blur-md shadow-inner">
-            <span className="flex h-2 w-2 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
-            </span>
-            <span>Direct REST API Proxy Pool</span>
+      <section className="home-frame">
+        <header className="home-header">
+          <div>
+            <div className="home-kicker">OpenAI-compatible local pool</div>
+            <h1>Antigravity Pool</h1>
           </div>
-          
-          <h1 className="text-4xl md:text-6xl font-black tracking-tight text-white">
-            <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent drop-shadow-sm">
-              Antigravity Pool
-            </span>
-          </h1>
-          
-          <p className="max-w-2xl mx-auto text-base md:text-lg text-slate-400 leading-relaxed font-normal">
-            极速、稳定的 Google/Gemini 账户流转代理池。通过原生 OAuth 自动刷新令牌，免去命令行开销，合并多账号并发额度为统一的 OpenAI 兼容端点。
-          </p>
-        </div>
-
-        {/* Action Button */}
-        <div className="flex justify-center">
-          <Link
-            href="/admin/dashboard"
-            className="group relative inline-flex items-center gap-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-8 py-4 text-sm font-semibold text-white shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 hover:scale-[1.03] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] active:scale-[0.98]"
-          >
-            进入管理面板 
-            <span className="transition-transform group-hover:translate-x-1.5 duration-200">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          <div className="home-actions">
+            <ThemeToggle theme={theme} onThemeChange={setThemeMode} />
+            <Link href="/admin/dashboard" className="primary-link">
+              管理面板
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0-5 5m5-5H6" />
               </svg>
-            </span>
-          </Link>
-        </div>
+            </Link>
+          </div>
+        </header>
 
-        {/* Config and Models Grid */}
-        <div className="grid gap-8 md:grid-cols-2">
-          {/* Config Block */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 backdrop-blur-md shadow-2xl flex flex-col justify-between space-y-4">
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <span className="flex h-2 w-2 rounded-full bg-indigo-500"></span>
-                <h2 className="font-bold text-slate-200 text-xs tracking-wider uppercase">Hermes / Cline 配置示例</h2>
+        <div className="home-grid">
+          <section className="home-panel config-panel">
+            <div className="panel-head">
+              <div>
+                <span>配置示例</span>
+                <strong>{selectedModel.name}</strong>
               </div>
-              <button
-                type="button"
-                onClick={copyConfig}
-                className="rounded-lg border border-slate-700 bg-slate-800/80 px-3.5 py-1.5 text-xs font-semibold text-slate-300 shadow-sm transition hover:bg-slate-700 hover:text-white active:scale-95 cursor-pointer"
-              >
-                {copied ? '已复制 ✔' : '复制配置'}
+              <button type="button" onClick={copyConfig} className="copy-button">
+                {copied ? '已复制' : '复制'}
               </button>
             </div>
-            <pre className="overflow-x-auto rounded-xl bg-slate-950/80 p-5 font-mono text-[11px] leading-5 text-slate-300 border border-slate-900">
-              <code>{hermesConfig}</code>
+            <pre>
+              <code>{config}</code>
             </pre>
-          </div>
+            <div className="model-facts">
+              <div>
+                <span>上下文</span>
+                <strong>{formatNumber(selectedModel.contextLength)}</strong>
+              </div>
+              <div>
+                <span>最大输出</span>
+                <strong>{formatNumber(selectedModel.maxOutputTokens)}</strong>
+              </div>
+              <div>
+                <span>上游</span>
+                <strong>{selectedModel.provider}</strong>
+              </div>
+            </div>
+          </section>
 
-          {/* Model Mapping Block */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 backdrop-blur-md shadow-2xl space-y-4">
-            <div className="flex items-center gap-2">
-              <span className="flex h-2 w-2 rounded-full bg-purple-500"></span>
-              <h2 className="font-bold text-slate-200 text-xs tracking-wider uppercase">支持与流转模型</h2>
+          <section className="home-panel model-panel">
+            <div className="panel-head">
+              <div>
+                <span>可用模型</span>
+                <strong>点击切换左侧配置</strong>
+              </div>
             </div>
-            <div className="divide-y divide-slate-800/60 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
-              {availableModels.map((model) => (
-                <div key={model.id} className="py-3 flex justify-between items-center text-xs group">
-                  <div>
-                    <div className="font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors">{model.name}</div>
-                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{model.id}</div>
-                  </div>
-                  <span className={`rounded-md bg-gradient-to-r ${model.color} px-2.5 py-1 text-[9px] font-bold text-white shadow-sm opacity-90`}>
-                    {model.type}
-                  </span>
-                </div>
-              ))}
+            <div className="model-list">
+              {PUBLIC_MODEL_IDS.map((modelId) => {
+                const model = MODEL_METADATA[modelId];
+                return (
+                  <button
+                    key={modelId}
+                    type="button"
+                    data-model-id={modelId}
+                    className={modelId === selectedModelId ? 'model-row active' : 'model-row'}
+                    onClick={() => setSelectedModelId(modelId)}
+                  >
+                    <span>
+                      <strong>{model.name}</strong>
+                      <small>{modelId}</small>
+                    </span>
+                    <em>{model.mode}</em>
+                  </button>
+                );
+              })}
             </div>
-          </div>
+          </section>
         </div>
 
-        {/* Integration Instructions */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 backdrop-blur-md shadow-2xl space-y-6">
-          <h2 className="font-bold text-white text-base flex items-center gap-2">
-            🚀 快速上手指南
-          </h2>
-          <div className="grid gap-6 md:grid-cols-3 text-xs text-slate-400 leading-relaxed">
-            <div className="space-y-2.5 p-4 rounded-xl bg-slate-950/40 border border-slate-800/50 hover:border-slate-700/50 transition">
-              <div className="font-bold text-slate-200 text-sm flex items-center gap-1.5">
-                <span className="text-indigo-400">01.</span> 启动服务
-              </div>
-              <p>在项目目录中运行 <code>npm run dev</code>。服务将默认监听本机的 <code>18080</code> 端口，并自动初始化数据库。</p>
-            </div>
-            <div className="space-y-2.5 p-4 rounded-xl bg-slate-950/40 border border-slate-800/50 hover:border-slate-700/50 transition">
-              <div className="font-bold text-slate-200 text-sm flex items-center gap-1.5">
-                <span className="text-indigo-400">02.</span> 导入凭据
-              </div>
-              <p>进入管理面板，点击“导入本地 Active 凭据”。它会自动解析并载入您本地的 <code>gemini:antigravity</code> 登录凭证。</p>
-            </div>
-            <div className="space-y-2.5 p-4 rounded-xl bg-slate-950/40 border border-slate-800/50 hover:border-slate-700/50 transition">
-              <div className="font-bold text-slate-200 text-sm flex items-center gap-1.5">
-                <span className="text-indigo-400">03.</span> 客户端配置
-              </div>
-              <p>将客户端 (如 Cline, Cursor) 的 Base URL 修改为 <code>http://localhost:18080/api/v1</code>，输入任意 Key 即可直接使用。</p>
-            </div>
+        <footer className="home-steps">
+          <div>
+            <span>01</span>
+            <strong>启动服务</strong>
+            <code>npm run dev</code>
           </div>
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="relative z-10 w-full text-center text-xs text-slate-600 border-t border-slate-900 py-8 mt-12 bg-slate-950/80">
-        Antigravity Pool Proxy v1.0 | Google Cloud Code Companion REST Engine
-      </div>
+          <div>
+            <span>02</span>
+            <strong>导入凭据</strong>
+            <code>gemini:antigravity</code>
+          </div>
+          <div>
+            <span>03</span>
+            <strong>客户端地址</strong>
+            <code>http://localhost:18080/api/v1</code>
+          </div>
+        </footer>
+      </section>
     </main>
   );
 }

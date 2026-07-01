@@ -1,10 +1,29 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
+const showSecrets = process.argv.includes('--show-secrets');
+
+function maskSecret(value) {
+  if (!value || value === 'none') return value;
+  if (value.length <= 12) return `${value.slice(0, 2)}...${value.slice(-2)}`;
+  return `${value.slice(0, 6)}...${value.slice(-6)}`;
+}
+
 async function main() {
-  const accounts = await prisma.account.findMany();
+  const accounts = await prisma.account.findMany({
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const output = accounts.map((account) => ({
+    ...account,
+    refreshToken: showSecrets ? account.refreshToken : maskSecret(account.refreshToken),
+  }));
+
   console.log('ACCOUNTS IN DB:');
-  console.log(JSON.stringify(accounts, null, 2));
+  if (!showSecrets) {
+    console.log('(refreshToken is masked; pass --show-secrets only on a private terminal if you truly need it)');
+  }
+  console.log(JSON.stringify(output, null, 2));
 }
 
 main().finally(async () => {
