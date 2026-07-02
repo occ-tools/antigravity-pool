@@ -408,47 +408,158 @@ function sseChunk(data: unknown) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function streamBufferedOutput(promptText: string, model: string, allowedToolNames: Set<string>, signal: AbortSignal, options?: AntigravityOptions) {
+/** Shared SSE streaming context — eliminates duplicate keepAlive, sendRole, sendStop/Usage patterns */
+function createSSEContext(controller: ReadableStreamDefaultController, responseId: string, created: number, model: string) {
   const encoder = new TextEncoder();
+  let closed = false;
+
+  const send = (data: unknown) => {
+    if (!closed) controller.enqueue(encoder.encode(sseChunk(data)));
+  };
+
+  const closeWithDone = () => {
+    if (closed) return;
+    controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+    controller.close();
+    closed = true;
+  };
+
+  const keepAlive = setInterval(() => {
+    if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'));
+  }, 10_000);
+
+  let sentRole = false;
+  const sendRole = () => {
+    if (sentRole) return;
+    sentRole = true;
+    sendRole();
+  };
+
+  const sendStop = (finishReason: string) => {
+    send({ id: responseId, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: finishReason }] });
+  };
+
+  const sendUsage = (data: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => {
+    sendUsage(data );
+  };
+
+  const sendContent = (text: string) => {
+    sendRole();
+    send({ id: responseId, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
+  };
+
+  const sendToolCall = (toolCall: { id: string; type: string; function: { name: string; arguments: string } }, index: number) => {
+    send({
+      id: responseId, object: 'chat.completion.chunk', created, model,
+      choices: [{ index: 0, delta: { tool_calls: [{ index, id: toolCall.id, type: 'function', function: toolCall.function }] }, finish_reason: null }],
+    });
+  };
+
+  const sendError = (message: string) => {
+    send({ error: { message, type: 'proxy_error' } });
+  };
+
+  return {
+    send, closeWithDone,
+    cleanup: () => { closed = true; clearInterval(keepAlive); },
+    sendRole, sendStop, sendUsage, sendContent, sendToolCall, sendError,
+    get sentRole() { return sentRole; },
+  };
+}
+
+/** Result from a single account streaming attempt */
+type AccountAttemptResult = {
+  ok: boolean;
+  account?: Account;
+  text?: string;
+  message: string;
+  accountStatus?: string;
+};
+
+/**
+ * Iterates accounts with slot-based leasing until one succeeds or all are exhausted.
+ * Calls `onChunk(text)` for each chunk of streaming text (may be undefined for non-streaming).
+ */
+async function withAccountRetry(
+  model: string,
+  promptText: string,
+  onChunk?: (text: string) => void,
+  signal?: AbortSignal,
+  options?: AntigravityOptions,
+): Promise<AccountAttemptResult> {
+  const attemptedIds = new Set<string>();
+  const startTime = Date.now();
+  let lastMessage = 'No active accounts available in the pool.';
+
+  while (true) {
+    const claim = await acquireAccountClaim(attemptedIds, signal);
+    if (!claim) break;
+
+    attemptedIds.add(claim.account.id);
+
+    try {
+      const result = await runAntigravityStream(claim.account, model, promptText, onChunk, signal, options);
+      const latency = Date.now() - startTime;
+
+      if (result.ok) {
+        await prisma.account.update({ where: { id: claim.account.id }, data: quotaObservationForSuccess() });
+        await logRequest(claim.account.id, getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(result.text || ''));
+        return { ok: true, account: claim.account, text: result.text, message: '', accountStatus: 'active' };
+      }
+
+      lastMessage = result.message || 'Unknown error';
+      const code = statusCodeForAccountStatus(result.accountStatus);
+      await markAccountFailure(claim.account, code, lastMessage);
+      await logRequest(claim.account.id, getTargetModel(model), code, latency, estimateTokens(promptText), 0, lastMessage);
+
+      if (result.emittedText) {
+        return { ok: false, account: claim.account, message: lastMessage, accountStatus: result.accountStatus };
+      }
+    } finally {
+      await releaseAccountClaim(claim);
+    }
+  }
+
+  return { ok: false, message: lastMessage };
+}
+
+/**
+ * Attempts a request via the AI Studio fallback (paid/gift API key).
+ * Returns same shape as withAccountRetry.
+ */
+async function withFallbackStream(
+  model: string,
+  promptText: string,
+  onChunk?: (text: string) => void,
+  signal?: AbortSignal,
+  options?: AntigravityOptions,
+): Promise<AccountAttemptResult> {
+  const fallbackKey = process.env.FALLBACK_GEMINI_API_KEY;
+  if (!fallbackKey) return { ok: false, message: 'No fallback API key configured' };
+
+  const startTime = Date.now();
+  const result = await runAIStudioStream(fallbackKey, model, promptText, onChunk, signal, options);
+  const latency = Date.now() - startTime;
+  await ensureFallbackAccount();
+
+  if (result.ok) {
+    await logRequest('fallback-ai-studio', getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(result.text || ''));
+    return { ok: true, text: result.text, message: '', accountStatus: 'active' };
+  }
+
+  await logRequest('fallback-ai-studio', getTargetModel(model), 502, latency, estimateTokens(promptText), 0, result.message);
+  return { ok: false, message: result.message || 'AI Studio fallback failed', accountStatus: result.accountStatus };
+}
+
+function streamBufferedOutput(promptText: string, model: string, allowedToolNames: Set<string>, signal: AbortSignal, options?: AntigravityOptions) {
   const created = Math.floor(Date.now() / 1000);
   const responseId = `chatcmpl-${created}`;
 
   const stream = new ReadableStream({
     async start(controller) {
-      let closed = false;
-      const send = (data: unknown) => {
-        if (!closed) controller.enqueue(encoder.encode(sseChunk(data)));
-      };
-      
-      const sendUsage = (data: unknown) => {
-        send({
-          id: responseId,
-          object: 'chat.completion.chunk',
-          created,
-          model,
-          choices: [],
-          usage: data,
-        });
-      };
-
-      const keepAlive = setInterval(() => {
-        if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'));
-      }, 10_000);
+      const { send, closeWithDone, cleanup, sendRole, sendStop, sendUsage, sendContent, sendToolCall, sendError } = createSSEContext(controller, responseId, created, model);
 
       try {
-        let sentRole = false;
-        const sendRole = () => {
-          if (sentRole) return;
-          sentRole = true;
-          send({
-            id: responseId,
-            object: 'chat.completion.chunk',
-            created,
-            model,
-            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-          });
-        };
-
         const attemptedIds = new Set<string>();
         let lastMessage = 'No active accounts available in the pool.';
         const startTime = Date.now();
@@ -471,49 +582,27 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
                 bufferedText += text;
                 const lowerBuf = bufferedText.toLowerCase();
 
-                // If it starts with '<', we might be entering tool calls
                 if (lowerBuf.startsWith('<')) {
-                  // If it doesn't match the prefix of '<codex_pool_tool_calls>' or exceeds its length, stop buffering
                   const prefix = toolTag.substring(0, lowerBuf.length);
                   if (lowerBuf !== prefix && !lowerBuf.startsWith(toolTag)) {
                     isBuffering = false;
                     sendRole();
                     attemptSentText = true;
                     sentAnyText = true;
-                    send({
-                      id: responseId,
-                      object: 'chat.completion.chunk',
-                      created,
-                      model,
-                      choices: [{ index: 0, delta: { content: bufferedText }, finish_reason: null }],
-                    });
+                    sendContent(bufferedText);
                   }
                 } else {
-                  // Doesn't start with '<', flush immediately
                   isBuffering = false;
                   sendRole();
                   attemptSentText = true;
                   sentAnyText = true;
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{ index: 0, delta: { content: bufferedText }, finish_reason: null }],
-                  });
+                  sendContent(bufferedText);
                 }
               } else {
-                // Already flushed, stream directly
                 sendRole();
                 attemptSentText = true;
                 sentAnyText = true;
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-                });
+                sendContent(text);
               }
             }, signal, options);
 
@@ -521,77 +610,29 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
 
             if (result.ok) {
               await prisma.account.update({ where: { id: claim.account.id }, data: quotaObservationForSuccess() });
-              
               const finalResponseText = result.text || bufferedText;
-              
+
               if (isBuffering) {
-                // The entire stream was buffered because it matched the tool calls tag prefix
                 const output = parseAssistantOutput(finalResponseText, allowedToolNames);
                 if (output.kind === 'tool_calls') {
                   const toolCalls = toOpenAIToolCalls(output.calls);
                   sendRole();
-                  toolCalls.forEach((toolCall, index) => {
-                    send({
-                      id: responseId,
-                      object: 'chat.completion.chunk',
-                      created,
-                      model,
-                      choices: [{
-                        index: 0,
-                        delta: {
-                          tool_calls: [{
-                            index,
-                            id: toolCall.id,
-                            type: 'function',
-                            function: toolCall.function,
-                          }],
-                        },
-                        finish_reason: null,
-                      }],
-                    });
-                  });
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-                  });
+                  toolCalls.forEach((toolCall, index) => sendToolCall(toolCall, index));
+                  sendStop('tool_calls');
                   sendUsage(usage(promptText, output));
                 } else {
-                  // Was not a tool call after all, flush the buffered text
                   sendRole();
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{ index: 0, delta: { content: finalResponseText }, finish_reason: null }],
-                  });
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-                  });
+                  sendContent(finalResponseText);
+                  sendStop('stop');
                   sendUsage(usage(promptText, output));
                 }
               } else {
-                // Already flushed in real-time, just send the final stop chunk
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-                });
+                sendStop('stop');
                 sendUsage(textUsage(promptText, finalResponseText));
               }
 
               await logRequest(claim.account.id, getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(finalResponseText));
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
+              closeWithDone();
               return;
             }
 
@@ -601,9 +642,8 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
             await logRequest(claim.account.id, getTargetModel(model), code, latency, estimateTokens(promptText), estimateTokens(bufferedText), lastMessage);
 
             if (attemptSentText) {
-              send({ error: { message: lastMessage, type: 'proxy_error' } });
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
+              sendError(lastMessage);
+              closeWithDone();
               return;
             }
           } finally {
@@ -630,36 +670,18 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
                   isBuffering = false;
                   sendRole();
                   sentAnyText = true;
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{ index: 0, delta: { content: bufferedText }, finish_reason: null }],
-                  });
+                  sendContent(bufferedText);
                 }
               } else {
                 isBuffering = false;
                 sendRole();
                 sentAnyText = true;
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: { content: bufferedText }, finish_reason: null }],
-                });
+                sendContent(bufferedText);
               }
             } else {
               sendRole();
               sentAnyText = true;
-              send({
-                id: responseId,
-                object: 'chat.completion.chunk',
-                created,
-                model,
-                choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-              });
+              sendContent(text);
             }
           }, signal, options);
 
@@ -673,66 +695,22 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
               if (output.kind === 'tool_calls') {
                 const toolCalls = toOpenAIToolCalls(output.calls);
                 sendRole();
-                toolCalls.forEach((toolCall, index) => {
-                  send({
-                    id: responseId,
-                    object: 'chat.completion.chunk',
-                    created,
-                    model,
-                    choices: [{
-                      index: 0,
-                      delta: {
-                        tool_calls: [{
-                          index,
-                          id: toolCall.id,
-                          type: 'function',
-                          function: toolCall.function,
-                        }],
-                      },
-                      finish_reason: null,
-                    }],
-                  });
-                });
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-                });
+                toolCalls.forEach((toolCall, index) => sendToolCall(toolCall, index));
+                sendStop('tool_calls');
                 sendUsage(usage(promptText, output));
               } else {
                 sendRole();
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: { content: finalResponseText }, finish_reason: null }],
-                });
-                send({
-                  id: responseId,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-                });
+                sendContent(finalResponseText);
+                sendStop('stop');
                 sendUsage(usage(promptText, output));
               }
             } else {
-              send({
-                id: responseId,
-                object: 'chat.completion.chunk',
-                created,
-                model,
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              });
+              sendStop('stop');
               sendUsage(textUsage(promptText, finalResponseText));
             }
 
             await logRequest('fallback-ai-studio', getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(finalResponseText));
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
+            closeWithDone();
             return;
           } else {
             await ensureFallbackAccount();
@@ -742,18 +720,15 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
         }
 
         if (!sentAnyText) {
-          send({ error: { message: lastMessage, type: 'proxy_error' } });
+          sendError(lastMessage);
         }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+        closeWithDone();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Internal Server Error';
-        send({ error: { message, type: 'proxy_error' } });
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+        sendError(message);
+        closeWithDone();
       } finally {
-        closed = true;
-        clearInterval(keepAlive);
+        cleanup();
       }
     },
   });
@@ -874,57 +849,24 @@ async function markAccountFailure(account: Account, statusCode: number, message:
 }
 
 async function runPromptWithRetry(promptText: string, modelName: string, signal?: AbortSignal, options?: AntigravityOptions): Promise<PromptAttemptResult> {
-  const attemptedIds = new Set<string>();
-  let lastResult = { ok: false, text: '', message: 'No active accounts available in the pool.' };
-  let lastAccount: Account | undefined;
-  const startTime = Date.now();
+  const accountResult = await withAccountRetry(modelName, promptText, undefined, signal, options);
 
-  while (true) {
-    const claim = await acquireAccountClaim(attemptedIds, signal);
-    if (!claim) break;
-
-    attemptedIds.add(claim.account.id);
-    lastAccount = claim.account;
-
-    try {
-      const result = await runAntigravityStream(claim.account, modelName, promptText, undefined, signal, options);
-      const latency = Date.now() - startTime;
-
-      if (result.ok) {
-        await prisma.account.update({ where: { id: claim.account.id }, data: quotaObservationForSuccess() });
-        await logRequest(claim.account.id, getTargetModel(modelName), 200, latency, estimateTokens(promptText), estimateTokens(result.text || ''));
-        return { result, account: claim.account };
-      }
-
-      lastResult = result as any;
-      const code = statusCodeForAccountStatus(result.accountStatus);
-      await markAccountFailure(claim.account, code, result.message || '');
-      await logRequest(claim.account.id, getTargetModel(modelName), code, latency, estimateTokens(promptText), 0, result.message);
-    } finally {
-      await releaseAccountClaim(claim);
-    }
+  if (accountResult.ok && accountResult.account) {
+    return { result: { ok: true, text: accountResult.text }, account: accountResult.account };
   }
 
   // Fallback to AI Studio if key is configured
-  const fallbackKey = process.env.FALLBACK_GEMINI_API_KEY;
-  if (fallbackKey) {
-    const latencyStart = Date.now();
-    const result = await runAIStudioStream(fallbackKey, modelName, promptText, undefined, signal, options);
-    const latency = Date.now() - latencyStart;
-    
-    if (result.ok) {
-      await ensureFallbackAccount();
-      await logRequest('fallback-ai-studio', getTargetModel(modelName), 200, latency, estimateTokens(promptText), estimateTokens(result.text || ''));
-      const fallbackAccount = await prisma.account.findUnique({ where: { id: 'fallback-ai-studio' } });
-      return { result, account: fallbackAccount || undefined };
-    } else {
-      await ensureFallbackAccount();
-      await logRequest('fallback-ai-studio', getTargetModel(modelName), 502, latency, estimateTokens(promptText), 0, result.message);
-      lastResult = result as any;
-    }
+  const fallbackResult = await withFallbackStream(modelName, promptText, undefined, signal, options);
+
+  if (fallbackResult.ok) {
+    const fallbackAccount = await prisma.account.findUnique({ where: { id: 'fallback-ai-studio' } });
+    return { result: { ok: true, text: fallbackResult.text }, account: fallbackAccount || undefined };
   }
 
-  return { result: lastResult, account: lastAccount };
+  return {
+    result: { ok: false, text: '', message: fallbackResult.message || accountResult.message },
+    account: accountResult.account,
+  };
 }
 
 function shouldStreamDirectly(stream: boolean, tools: FunctionTool[]) {
@@ -932,170 +874,64 @@ function shouldStreamDirectly(stream: boolean, tools: FunctionTool[]) {
 }
 
 function streamAntigravityText(promptText: string, model: string, signal: AbortSignal, options?: AntigravityOptions) {
-  const encoder = new TextEncoder();
   const created = Math.floor(Date.now() / 1000);
   const responseId = `chatcmpl-${created}`;
 
   const stream = new ReadableStream({
     async start(controller) {
-      let sentRole = false;
-      let sentAnyText = false;
-      let completionText = '';
-      let lastMessage = 'No active accounts available in the pool.';
-      const startTime = Date.now();
-      let closed = false;
+      const { closeWithDone, cleanup, sendStop, sendUsage, sendContent, sendError } = createSSEContext(controller, responseId, created, model);
 
-      const send = (data: unknown) => {
-        if (!closed) controller.enqueue(encoder.encode(sseChunk(data)));
-      };
-      const closeWithDone = () => {
-        if (closed) return;
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-        closed = true;
-      };
-      const keepAlive = setInterval(() => {
-        if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'));
-      }, 10_000);
-      const sendRole = () => {
-        if (sentRole) return;
-        sentRole = true;
-        send({
-          id: responseId,
-          object: 'chat.completion.chunk',
-          created,
-          model,
-          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-        });
-      };
+      let completionText = '';
+      let sentAnyText = false;
 
       try {
-        const attemptedIds = new Set<string>();
+        const accountResult = await withAccountRetry(model, promptText, (text) => {
+          sentAnyText = true;
+          completionText += text;
+          sendContent(text);
+        }, signal, options);
 
-        while (true) {
-          const claim = await acquireAccountClaim(attemptedIds, signal);
-          if (!claim) break;
-
-          attemptedIds.add(claim.account.id);
-          let attemptSentText = false;
-
-          try {
-            const result = await runAntigravityStream(claim.account, model, promptText, (text) => {
-              sendRole();
-              attemptSentText = true;
-              sentAnyText = true;
-              completionText += text;
-              send({
-                id: responseId,
-                object: 'chat.completion.chunk',
-                created,
-                model,
-                choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-              });
-            }, signal, options);
-
-            const latency = Date.now() - startTime;
-
-            if (result.ok) {
-              await prisma.account.update({ where: { id: claim.account.id }, data: quotaObservationForSuccess() });
-              sendRole();
-              send({
-                id: responseId,
-                object: 'chat.completion.chunk',
-                created,
-                model,
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              });
-              send({
-                id: responseId,
-                object: 'chat.completion.chunk',
-                created,
-                model,
-                choices: [],
-                usage: textUsage(promptText, completionText || result.text || ''),
-              });
-              await logRequest(claim.account.id, getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(completionText || result.text || ''));
-              closeWithDone();
-              return;
-            }
-
-            lastMessage = result.message || 'Unknown error';
-            const code = statusCodeForAccountStatus(result.accountStatus);
-            await markAccountFailure(claim.account, code, lastMessage);
-            await logRequest(claim.account.id, getTargetModel(model), code, latency, estimateTokens(promptText), estimateTokens(completionText), lastMessage);
-
-            if (attemptSentText) {
-              send({ error: { message: lastMessage, type: 'proxy_error' } });
-              closeWithDone();
-              return;
-            }
-          } finally {
-            await releaseAccountClaim(claim);
-          }
+        if (accountResult.ok) {
+          sendStop('stop');
+          sendUsage(textUsage(promptText, completionText || accountResult.text || ''));
+          closeWithDone();
+          return;
         }
 
-        // Fallback to AI Studio if key is configured
-        const fallbackKey = process.env.FALLBACK_GEMINI_API_KEY;
-        if (fallbackKey && !sentAnyText) {
-          const latencyStart = Date.now();
-          const result = await runAIStudioStream(fallbackKey, model, promptText, (text) => {
-            sendRole();
+        // Fallback to AI Studio
+        if (!sentAnyText) {
+          const fallbackResult = await withFallbackStream(model, promptText, (text) => {
             sentAnyText = true;
             completionText += text;
-            send({
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created,
-              model,
-              choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-            });
+            sendContent(text);
           }, signal, options);
 
-          const latency = Date.now() - latencyStart;
-          if (result.ok) {
-            await ensureFallbackAccount();
-            sendRole();
-            send({
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created,
-              model,
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-            });
-            send({
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created,
-              model,
-              choices: [],
-              usage: textUsage(promptText, completionText || result.text || ''),
-            });
-            await logRequest('fallback-ai-studio', getTargetModel(model), 200, latency, estimateTokens(promptText), estimateTokens(completionText || result.text || ''));
+          if (fallbackResult.ok) {
+            sendStop('stop');
+            sendUsage(textUsage(promptText, completionText || fallbackResult.text || ''));
             closeWithDone();
             return;
-          } else {
-            await ensureFallbackAccount();
-            await logRequest('fallback-ai-studio', getTargetModel(model), 502, latency, estimateTokens(promptText), 0, result.message);
-            lastMessage = result.message || 'AI Studio fallback failed';
           }
         }
 
         if (!sentAnyText) {
-          send({ error: { message: lastMessage, type: 'proxy_error' } });
+          sendError(accountResult.message);
         }
         closeWithDone();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Internal Server Error';
-        send({ error: { message, type: 'proxy_error' } });
+        sendError(message);
         closeWithDone();
       } finally {
-        clearInterval(keepAlive);
+        cleanup();
       }
     },
   });
 
   return new Response(stream, streamHeaders());
 }
+
+
 
 export async function POST(req: Request) {
   try {

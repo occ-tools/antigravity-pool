@@ -28,6 +28,10 @@ model Account {
   leaseUntil     DateTime?
   leases         AccountLease[]
   RequestLog     RequestLog[]
+
+  @@index([status])
+  @@index([lastUsed])
+  @@index([status, quotaResetAt])
 }
 
 model AccountLease {
@@ -41,6 +45,7 @@ model AccountLease {
 
   @@unique([accountId, slot])
   @@index([leaseUntil])
+  @@index([accountId, slot, leaseUntil])
 }
 
 model RequestLog {

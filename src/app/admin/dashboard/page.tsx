@@ -40,6 +40,7 @@ export default function AdminDashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const [theme, setTheme] = useState<ThemeMode>('dark');
 
   // Form states
@@ -64,23 +65,19 @@ export default function AdminDashboard() {
     }
   }, []);
 
+  // Initial data load and periodic auto-refresh every 30s
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadData();
-    }, 0);
-
-    return () => window.clearTimeout(timer);
+    loadData();
+    const interval = window.setInterval(loadData, 30_000);
+    return () => window.clearInterval(interval);
   }, [loadData]);
 
+  // Initialize theme from localStorage
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setTheme((currentTheme) => {
-        const savedTheme = initialTheme(currentTheme);
-        return savedTheme === currentTheme ? currentTheme : savedTheme;
-      });
-    }, 0);
-
-    return () => window.clearTimeout(timer);
+    setTheme((currentTheme) => {
+      const savedTheme = initialTheme(currentTheme);
+      return savedTheme === currentTheme ? currentTheme : savedTheme;
+    });
   }, []);
 
   const setThemeMode = (nextTheme: ThemeMode) => {
@@ -92,21 +89,21 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleCleanup = async () => {
-    if (!confirm('运行缓存清理，释放磁盘空间？')) return;
+  const doCleanup = async () => {
+    setConfirmDialog(null);
     setCleaning(true);
     try {
       const res = await fetch('/api/admin/cleanup', { method: 'POST' });
-      if (res.ok) {
-        alert('缓存清理任务已启动');
-      } else {
-        alert('启动缓存清理失败');
-      }
+      setSuccessMsg(res.ok ? '缓存清理任务已启动' : '启动缓存清理失败');
     } catch (err) {
-      alert(`请求失败: ${err}`);
+      setErrorMsg(`请求失败: ${err}`);
     } finally {
       setCleaning(false);
     }
+  };
+
+  const handleCleanup = () => {
+    setConfirmDialog({ message: '运行缓存清理，释放磁盘空间？', onConfirm: doCleanup });
   };
 
   const handleImportLocal = async () => {
@@ -172,8 +169,8 @@ export default function AdminDashboard() {
     }
   };
 
-  const deleteAccount = async (id: string) => {
-    if (!confirm('确定删除此账户？')) return;
+  const doDeleteAccount = async (id: string) => {
+    setConfirmDialog(null);
     try {
       const res = await fetch(`/api/admin/accounts/${id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -186,6 +183,10 @@ export default function AdminDashboard() {
     } catch (err) {
       setErrorMsg(`删除请求失败: ${err}`);
     }
+  };
+
+  const deleteAccount = (id: string) => {
+    setConfirmDialog({ message: '确定删除此账户？', onConfirm: () => doDeleteAccount(id) });
   };
 
   const checkHealth = async (id: string, source: 'manual' | 'import' = 'manual') => {
@@ -583,6 +584,29 @@ export default function AdminDashboard() {
         </div>
 
         {/* Add Account Modal */}
+        {/* Confirm Dialog */}
+        {confirmDialog && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-xl border border-slate-850 bg-slate-900 p-6 shadow-2xl space-y-4 relative">
+              <p className="text-slate-200 text-sm">{confirmDialog.message}</p>
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={() => setConfirmDialog(null)}
+                  className="w-1/2 rounded-lg border border-slate-800 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-300 shadow-sm transition hover:bg-slate-750 cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmDialog.onConfirm}
+                  className="w-1/2 rounded-lg bg-rose-600 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-rose-700 cursor-pointer"
+                >
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showAddModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm">
             <div className="w-full max-w-md rounded-xl border border-slate-850 bg-slate-900 p-6 shadow-2xl space-y-4 relative">

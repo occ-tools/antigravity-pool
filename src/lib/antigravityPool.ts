@@ -25,7 +25,18 @@ export {
 
 // Load proxy settings from environment
 const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-export const proxyAgent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+const proxyAgent: ProxyAgent | undefined = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+
+/**
+ * Wraps global fetch with optional proxy dispatcher, avoiding `as any` casts.
+ * Accepts the same arguments as standard fetch.
+ */
+function pooledFetch(url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1] & { dispatcher?: ProxyAgent }) {
+  if (proxyAgent) {
+    return fetch(url, { ...init, dispatcher: proxyAgent } as any);
+  }
+  return fetch(url, init);
+}
 
 // Google Cloud Code companion Client ID and Secret (loaded from env)
 export const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -98,9 +109,12 @@ export function getModelOwner(modelId: string) {
   return modelId.startsWith('claude-') ? 'anthropic-vertex' : 'google-daily-preview';
 }
 
+const MODEL_MAP_ENTRIES = Object.entries(MODEL_MAP)
+  .sort(([a], [b]) => b.length - a.length);
+
 export function getTargetModel(modelName: string): string {
   const normalized = modelName.toLowerCase();
-  for (const [key, val] of Object.entries(MODEL_MAP)) {
+  for (const [key, val] of MODEL_MAP_ENTRIES) {
     if (normalized.includes(key.toLowerCase())) {
       return val;
     }
@@ -114,6 +128,22 @@ interface CachedToken {
   expiresAt: number; // epoch ms
 }
 const tokenCache = new Map<string, CachedToken>();
+const tokenCacheCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [key, token] of tokenCache) {
+    if (token.expiresAt <= now) tokenCache.delete(key);
+  }
+}, 60_000);
+// Allow cleanup to not keep the process alive
+if (tokenCacheCleanupInterval.unref) tokenCacheCleanupInterval.unref();
+
+export function evictTokenCache(accountId: string) {
+  tokenCache.delete(accountId);
+}
+
+export function clearTokenCache() {
+  tokenCache.clear();
+}
 
 function createTimeoutSignal(parentSignal?: AbortSignal) {
   const controller = new AbortController();
@@ -156,7 +186,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
     throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured before refreshing OAuth tokens.');
   }
 
-  const res = await fetch('https://oauth2.googleapis.com/token', {
+  const res = await pooledFetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -165,8 +195,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }),
-    dispatcher: proxyAgent,
-  } as any);
+  });
 
   const text = await res.text();
   let data: any;
@@ -189,10 +218,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
  * Decodes email info from Google API userinfo endpoint
  */
 export async function fetchUserEmail(accessToken: string): Promise<string> {
-  const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+  const res = await pooledFetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     headers: { 'Authorization': `Bearer ${accessToken}` },
-    dispatcher: proxyAgent,
-  } as any);
+  });
 
   const text = await res.text();
   let data: any;
@@ -390,7 +418,7 @@ export async function runAntigravityStream(
 
   const timeoutSignal = createTimeoutSignal(signal);
   try {
-    const response = await fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse', {
+    const response = await pooledFetch('https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -399,8 +427,7 @@ export async function runAntigravityStream(
       },
       body: JSON.stringify(body),
       signal: timeoutSignal.signal,
-      dispatcher: proxyAgent,
-    } as any);
+      });
 
     if (!response.ok) {
       const errText = await response.text();
@@ -525,7 +552,7 @@ export async function runAIStudioStream(
 
   const timeoutSignal = createTimeoutSignal(signal);
   try {
-    const response = await fetch(url, {
+    const response = await pooledFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -533,8 +560,7 @@ export async function runAIStudioStream(
       },
       body: JSON.stringify(body),
       signal: timeoutSignal.signal,
-      dispatcher: proxyAgent,
-    } as any);
+      });
 
     if (!response.ok) {
       const errText = await response.text();
