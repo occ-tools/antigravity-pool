@@ -4,6 +4,21 @@ import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/adminAuth';
 import { getWindowsCredential, fetchUserEmail, refreshAccessToken } from '@/lib/antigravityPool';
 
+function stringFromCredential(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getCredentialEmail(credData: any): string | null {
+  const candidates = [
+    credData?.email,
+    credData?.account?.email,
+    credData?.token?.email,
+    credData?.user?.email,
+  ];
+  const email = candidates.map(stringFromCredential).find((candidate) => candidate.includes('@'));
+  return email || null;
+}
+
 export async function POST(req: Request) {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
@@ -36,24 +51,15 @@ export async function POST(req: Request) {
       );
     }
 
-    let accessToken = '';
+    let email = getCredentialEmail(credData);
+    let refreshError: string | null = null;
+
     try {
       const refreshed = await refreshAccessToken(refreshToken);
-      accessToken = refreshed.access_token;
+      email = await fetchUserEmail(refreshed.access_token);
     } catch (err) {
-      const message = err instanceof Error ? err.message : '无法刷新本地凭据';
-      return NextResponse.json(
-        { error: `本地凭据已读取，但 OAuth 刷新失败：${message}` },
-        { status: 409 }
-      );
-    }
-
-    // Resolve email dynamically
-    let email = 'unknown@gmail.com';
-    try {
-      email = await fetchUserEmail(accessToken);
-    } catch (emailErr: any) {
-      console.warn('Failed to dynamically resolve email for imported credentials:', emailErr.message);
+      refreshError = err instanceof Error ? err.message : '无法刷新本地凭据';
+      console.warn('Imported local credential without OAuth refresh:', refreshError);
     }
 
     // Check if account already exists
@@ -62,11 +68,12 @@ export async function POST(req: Request) {
     });
 
     if (existing) {
+      const resolvedEmail = email || existing.email;
       const updated = await prisma.account.update({
         where: { id: existing.id },
         data: {
-          name: email !== 'unknown@gmail.com' ? `Keyring Account (${email.split('@')[0]})` : existing.name,
-          email: email !== 'unknown@gmail.com' ? email : existing.email,
+          name: resolvedEmail ? `Keyring Account (${resolvedEmail.split('@')[0]})` : existing.name,
+          email: resolvedEmail,
           status: 'active',
           quotaStatus: 'unknown',
           quotaResetAt: null,
@@ -77,7 +84,10 @@ export async function POST(req: Request) {
 
       return NextResponse.json({
         success: true,
-        message: '凭据已存在，已刷新账号状态',
+        message: refreshError
+          ? '本地 Active 凭据已导入；配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 后可执行自检与刷新。'
+          : '凭据已存在，已刷新账号状态',
+        healthCheckAvailable: !refreshError,
         account: {
           id: updated.id,
           name: updated.name,
@@ -88,7 +98,7 @@ export async function POST(req: Request) {
     }
 
     // Create new account entry
-    const name = email !== 'unknown@gmail.com' ? `Keyring Account (${email.split('@')[0]})` : 'Imported Keyring Account';
+    const name = email ? `Keyring Account (${email.split('@')[0]})` : 'Imported Keyring Account';
     const account = await prisma.account.create({
       data: {
         name,
@@ -100,7 +110,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: '凭据成功导入！',
+      message: refreshError
+        ? '本地 Active 凭据已导入；配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 后可执行自检与刷新。'
+        : '凭据成功导入！',
+      healthCheckAvailable: !refreshError,
       account: {
         id: account.id,
         name: account.name,

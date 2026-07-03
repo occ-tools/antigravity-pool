@@ -99,6 +99,10 @@ export default function AdminDashboard() {
     }
   };
 
+  const toggleThemeMode = () => {
+    setThemeMode(theme === 'light' ? 'dark' : 'light');
+  };
+
   const doCleanup = async () => {
     setConfirmDialog(null);
     setCleaning(true);
@@ -126,7 +130,7 @@ export default function AdminDashboard() {
       const data = await res.json();
       if (res.ok) {
         const accountId = typeof data?.account?.id === 'string' ? data.account.id : '';
-        if (accountId) {
+        if (accountId && data?.healthCheckAvailable !== false) {
           setSuccessMsg(`${data.message || '本地 Active 凭据成功导入'}，正在自检...`);
           await checkHealth(accountId, 'import');
         } else {
@@ -244,7 +248,7 @@ export default function AdminDashboard() {
   };
 
   return (
-    <main className={`dashboard-shell theme-${theme} min-h-screen md:h-screen w-screen bg-slate-950 text-slate-100 font-sans md:overflow-hidden flex flex-col relative`}>
+    <main className={`dashboard-shell theme-${theme} min-h-screen md:h-screen w-full overflow-x-hidden bg-slate-950 text-slate-100 font-sans md:overflow-hidden flex flex-col relative`}>
       {/* Background glowing gradients */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className="absolute top-0 right-1/4 w-[500px] h-[500px] rounded-full bg-indigo-900/10 blur-[120px]" />
@@ -267,39 +271,32 @@ export default function AdminDashboard() {
             </div>
             <p className="text-sm text-slate-400 mt-1.5">Google/Gemini 账号流转池，自动获取及缓存访问令牌</p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="theme-toggle" aria-label="Theme mode">
-              <button
-                type="button"
-                className={theme === 'light' ? 'active' : ''}
-                onClick={() => setThemeMode('light')}
-                aria-label="亮色模式"
-                aria-pressed={theme === 'light'}
-                data-theme-mode="light"
-                title="亮色模式"
-              >
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            <button
+              type="button"
+              className="theme-switch"
+              onClick={toggleThemeMode}
+              aria-label={theme === 'light' ? '切换到暗色模式' : '切换到亮色模式'}
+              aria-pressed={theme === 'dark'}
+              data-theme-mode={theme}
+              title={theme === 'light' ? '切换到暗色模式' : '切换到亮色模式'}
+            >
+              <span className="theme-switch-icon theme-switch-sun" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                   <circle cx="12" cy="12" r="4" />
                   <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
                 </svg>
-              </button>
-              <button
-                type="button"
-                className={theme === 'dark' ? 'active' : ''}
-                onClick={() => setThemeMode('dark')}
-                aria-label="暗色模式"
-                aria-pressed={theme === 'dark'}
-                data-theme-mode="dark"
-                title="暗色模式"
-              >
+              </span>
+              <span className="theme-switch-icon theme-switch-moon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                   <path d="M21 12.79A8.5 8.5 0 1 1 11.21 3 6.5 6.5 0 0 0 21 12.79Z" />
                 </svg>
-              </button>
-            </div>
+              </span>
+              <span className="theme-switch-thumb" aria-hidden="true" />
+            </button>
             <button
               onClick={() => setShowAddModal(true)}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] text-center cursor-pointer select-none"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] text-center cursor-pointer select-none whitespace-nowrap"
             >
               <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -308,7 +305,7 @@ export default function AdminDashboard() {
             </button>
             <button
               onClick={loadData}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] text-center cursor-pointer select-none"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] text-center cursor-pointer select-none whitespace-nowrap"
             >
               <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M21 3v5h-5" />
@@ -318,7 +315,7 @@ export default function AdminDashboard() {
             <button
               onClick={handleCleanup}
               disabled={cleaning}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] disabled:opacity-50 text-center cursor-pointer select-none"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium shadow-sm transition active:scale-[0.97] disabled:opacity-50 text-center cursor-pointer select-none whitespace-nowrap"
             >
               <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -327,7 +324,7 @@ export default function AdminDashboard() {
             </button>
             <Link
               href="/"
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium transition active:scale-[0.97] text-center select-none"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 hover:text-white text-slate-300 px-4 py-2 text-sm font-medium transition active:scale-[0.97] text-center select-none whitespace-nowrap"
             >
               <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
