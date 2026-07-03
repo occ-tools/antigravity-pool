@@ -52,11 +52,7 @@ function sqlitePathFromUrl(url: string) {
   return isAbsolute(normalized) ? normalized : join(/*turbopackIgnore: true*/ process.cwd(), normalized);
 }
 
-const dbPath = sqlitePathFromUrl(process.env.DATABASE_URL);
-mkdirSync(dirname(dbPath), { recursive: true });
-
-const db = new DatabaseSync(dbPath);
-db.exec(`
+const schemaSql = `
   PRAGMA journal_mode = WAL;
   PRAGMA busy_timeout = 5000;
 
@@ -107,7 +103,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS AccountLease_leaseUntil_idx ON AccountLease(leaseUntil);
   CREATE INDEX IF NOT EXISTS AccountLease_accountId_slot_leaseUntil_idx ON AccountLease(accountId, slot, leaseUntil);
   CREATE INDEX IF NOT EXISTS RequestLog_timestamp_idx ON RequestLog(timestamp);
-`);
+`;
+
+let dbInstance: DatabaseSync | null = null;
+
+function database() {
+  if (!dbInstance) {
+    const dbPath = sqlitePathFromUrl(process.env.DATABASE_URL ?? 'file:./dev.db');
+    mkdirSync(dirname(dbPath), { recursive: true });
+    dbInstance = new DatabaseSync(dbPath);
+    dbInstance.exec(schemaSql);
+  }
+  return dbInstance;
+}
 
 function iso(value: Date | string | null | undefined) {
   if (!value) return null;
@@ -166,12 +174,12 @@ function rowLog(row: unknown): RequestLog {
 }
 
 function accountById(id: string) {
-  const row = db.prepare('SELECT * FROM Account WHERE id = $id').get({ $id: id });
+  const row = database().prepare('SELECT * FROM Account WHERE id = $id').get({ $id: id });
   return row ? rowAccount(row) : null;
 }
 
 function leaseById(id: string) {
-  const row = db.prepare('SELECT * FROM AccountLease WHERE id = $id').get({ $id: id });
+  const row = database().prepare('SELECT * FROM AccountLease WHERE id = $id').get({ $id: id });
   return row ? rowLease(row) : null;
 }
 
@@ -190,7 +198,7 @@ function applyAccountUpdate(id: string, data: Record<string, unknown>) {
   }
 
   fields.push('updatedAt = $updatedAt');
-  db.prepare(`UPDATE Account SET ${fields.join(', ')} WHERE id = $id`).run(params);
+  database().prepare(`UPDATE Account SET ${fields.join(', ')} WHERE id = $id`).run(params);
   const account = accountById(id);
   if (!account) throw new Error(`Account not found: ${id}`);
   return account;
@@ -204,7 +212,7 @@ export const prisma = {
   async $connect() {},
   async $disconnect() {},
   async $queryRawUnsafe(sql: string) {
-    db.exec(sql);
+    database().exec(sql);
   },
   account: {
     async findMany(options: {
@@ -212,7 +220,7 @@ export const prisma = {
       orderBy?: { lastUsed?: 'asc'; createdAt?: 'desc'; name?: 'asc' };
       include?: { leases?: { where?: { leaseUntil?: { gt: Date } }; orderBy?: { leaseUntil: 'desc' }; take?: number } };
     } = {}) {
-      const rows = db.prepare('SELECT * FROM Account').all().map(rowAccount);
+      const rows = database().prepare('SELECT * FROM Account').all().map(rowAccount);
       let accounts = rows;
       if (options.where?.id?.notIn) {
         const excluded = new Set(options.where.id.notIn);
@@ -233,21 +241,21 @@ export const prisma = {
 
       const cutoff = options.include.leases.where?.leaseUntil?.gt;
       return accounts.map((account) => {
-        let leases = db.prepare('SELECT * FROM AccountLease WHERE accountId = $accountId').all({ $accountId: account.id }).map(rowLease);
+        let leases = database().prepare('SELECT * FROM AccountLease WHERE accountId = $accountId').all({ $accountId: account.id }).map(rowLease);
         if (cutoff) leases = leases.filter((lease) => lease.leaseUntil > cutoff);
         leases.sort((a, b) => b.leaseUntil.getTime() - a.leaseUntil.getTime());
         return { ...account, leases: leases.slice(0, options.include?.leases?.take ?? leases.length) };
       });
     },
     async count(options: { where?: { OR?: Array<{ status: string; quotaResetAt?: { lte: Date } }> } } = {}) {
-      const accounts = db.prepare('SELECT * FROM Account').all().map(rowAccount);
+      const accounts = database().prepare('SELECT * FROM Account').all().map(rowAccount);
       if (!options.where?.OR) return accounts.length;
       const now = options.where.OR.find((entry) => entry.quotaResetAt)?.quotaResetAt?.lte ?? new Date();
       return accounts.filter((account) => accountMatchesActiveWhere(account, now)).length;
     },
     async findFirst(options: { where: { refreshToken?: string } }) {
       if (!options.where.refreshToken) return null;
-      const row = db.prepare('SELECT * FROM Account WHERE refreshToken = $refreshToken LIMIT 1').get({ $refreshToken: options.where.refreshToken });
+      const row = database().prepare('SELECT * FROM Account WHERE refreshToken = $refreshToken LIMIT 1').get({ $refreshToken: options.where.refreshToken });
       return row ? rowAccount(row) : null;
     },
     async findUnique(options: { where: { id: string } }) {
@@ -256,7 +264,7 @@ export const prisma = {
     async create(options: { data: Partial<Account> & { name: string; refreshToken: string } }) {
       const id = options.data.id ?? randomUUID();
       const createdAt = nowIso();
-      db.prepare(`
+      database().prepare(`
         INSERT INTO Account (id, name, email, refreshToken, status, lastUsed, usageCount, createdAt, updatedAt, quotaStatus, quotaResetAt, quotaMessage, quotaCheckedAt, leaseUntil)
         VALUES ($id, $name, $email, $refreshToken, $status, $lastUsed, $usageCount, $createdAt, $updatedAt, $quotaStatus, $quotaResetAt, $quotaMessage, $quotaCheckedAt, $leaseUntil)
       `).run({
@@ -289,7 +297,7 @@ export const prisma = {
     },
     async delete(options: { where: { id: string } }) {
       const account = accountById(options.where.id);
-      db.prepare('DELETE FROM Account WHERE id = $id').run({ $id: options.where.id });
+      database().prepare('DELETE FROM Account WHERE id = $id').run({ $id: options.where.id });
       if (!account) throw new Error(`Account not found: ${options.where.id}`);
       return account;
     },
@@ -297,28 +305,28 @@ export const prisma = {
   accountLease: {
     async deleteMany(options: { where?: { id?: string; leaseUntil?: { lte?: Date } } } = {}) {
       if (options.where?.id) {
-        return db.prepare('DELETE FROM AccountLease WHERE id = $id').run({ $id: options.where.id });
+        return database().prepare('DELETE FROM AccountLease WHERE id = $id').run({ $id: options.where.id });
       }
       if (options.where?.leaseUntil?.lte) {
-        return db.prepare('DELETE FROM AccountLease WHERE leaseUntil <= $leaseUntil').run({ $leaseUntil: options.where.leaseUntil.lte.toISOString() });
+        return database().prepare('DELETE FROM AccountLease WHERE leaseUntil <= $leaseUntil').run({ $leaseUntil: options.where.leaseUntil.lte.toISOString() });
       }
-      return db.prepare('DELETE FROM AccountLease').run();
+      return database().prepare('DELETE FROM AccountLease').run();
     },
     async count(options: { where?: { leaseUntil?: { gt: Date } } } = {}) {
       if (options.where?.leaseUntil?.gt) {
-        const row = db.prepare('SELECT COUNT(*) AS count FROM AccountLease WHERE leaseUntil > $leaseUntil').get({ $leaseUntil: options.where.leaseUntil.gt.toISOString() }) as { count: number };
+        const row = database().prepare('SELECT COUNT(*) AS count FROM AccountLease WHERE leaseUntil > $leaseUntil').get({ $leaseUntil: options.where.leaseUntil.gt.toISOString() }) as { count: number };
         return Number(row.count);
       }
-      const row = db.prepare('SELECT COUNT(*) AS count FROM AccountLease').get() as { count: number };
+      const row = database().prepare('SELECT COUNT(*) AS count FROM AccountLease').get() as { count: number };
       return Number(row.count);
     },
     async findUnique(options: { where: { accountId_slot?: { accountId: string; slot: number }; id?: string } }) {
       const row = options.where.accountId_slot
-        ? db.prepare('SELECT * FROM AccountLease WHERE accountId = $accountId AND slot = $slot').get({
+        ? database().prepare('SELECT * FROM AccountLease WHERE accountId = $accountId AND slot = $slot').get({
             $accountId: options.where.accountId_slot.accountId,
             $slot: options.where.accountId_slot.slot,
           })
-        : db.prepare('SELECT * FROM AccountLease WHERE id = $id').get({ $id: options.where.id ?? '' });
+        : database().prepare('SELECT * FROM AccountLease WHERE id = $id').get({ $id: options.where.id ?? '' });
       return row ? rowLease(row) : null;
     },
     async findUniqueOrThrow(options: { where: { id: string } }) {
@@ -327,7 +335,7 @@ export const prisma = {
       return lease;
     },
     async updateMany(options: { where: { id: string; leaseUntil?: { lte: Date } }; data: { leaseUntil: Date } }) {
-      const result = db.prepare('UPDATE AccountLease SET leaseUntil = $newLeaseUntil, updatedAt = $updatedAt WHERE id = $id AND leaseUntil <= $oldLeaseUntil').run({
+      const result = database().prepare('UPDATE AccountLease SET leaseUntil = $newLeaseUntil, updatedAt = $updatedAt WHERE id = $id AND leaseUntil <= $oldLeaseUntil').run({
         $id: options.where.id,
         $oldLeaseUntil: options.where.leaseUntil?.lte.toISOString() ?? nowIso(),
         $newLeaseUntil: options.data.leaseUntil.toISOString(),
@@ -338,7 +346,7 @@ export const prisma = {
     async create(options: { data: { accountId: string; slot: number; leaseUntil: Date } }) {
       const id = randomUUID();
       const createdAt = nowIso();
-      db.prepare('INSERT INTO AccountLease (id, accountId, slot, leaseUntil, createdAt, updatedAt) VALUES ($id, $accountId, $slot, $leaseUntil, $createdAt, $updatedAt)').run({
+      database().prepare('INSERT INTO AccountLease (id, accountId, slot, leaseUntil, createdAt, updatedAt) VALUES ($id, $accountId, $slot, $leaseUntil, $createdAt, $updatedAt)').run({
         $id: id,
         $accountId: options.data.accountId,
         $slot: options.data.slot,
@@ -352,7 +360,7 @@ export const prisma = {
   requestLog: {
     async create(options: { data: { accountId: string; model: string; statusCode: number; latency: number; promptTokens: number; completionTokens: number; error?: string | null } }) {
       const id = randomUUID();
-      db.prepare(`
+      database().prepare(`
         INSERT INTO RequestLog (id, accountId, model, statusCode, latency, promptTokens, completionTokens, error, timestamp)
         VALUES ($id, $accountId, $model, $statusCode, $latency, $promptTokens, $completionTokens, $error, $timestamp)
       `).run({
@@ -368,7 +376,7 @@ export const prisma = {
       });
     },
     async findMany(options: { where?: { timestamp?: { gte: Date } }; include?: { account?: true | { select: { name: true } } }; orderBy?: { timestamp: 'desc' }; take?: number } = {}) {
-      let logs = db.prepare('SELECT * FROM RequestLog').all().map(rowLog);
+      let logs = database().prepare('SELECT * FROM RequestLog').all().map(rowLog);
       if (options.where?.timestamp?.gte) {
         const cutoff = options.where.timestamp.gte;
         logs = logs.filter((log) => log.timestamp >= cutoff);
