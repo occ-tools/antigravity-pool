@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Next.js-16.2-black?style=for-the-badge&logo=next.js" alt="Next.js"/>
-  <img src="https://img.shields.io/badge/Prisma-Client-blueviolet?style=for-the-badge&logo=prisma" alt="Prisma"/>
+  <img src="https://img.shields.io/badge/Prisma-Schema-blueviolet?style=for-the-badge&logo=prisma" alt="Prisma Schema"/>
   <img src="https://img.shields.io/badge/SQLite-WAL-blue?style=for-the-badge&logo=sqlite" alt="SQLite"/>
   <img src="https://img.shields.io/badge/OAuth-2.0-orange?style=for-the-badge&logo=google" alt="OAuth"/>
   <img src="https://img.shields.io/badge/OpenAI-Compatible-green?style=for-the-badge" alt="OpenAI Compatible"/>
@@ -53,7 +53,7 @@ graph TD
 ## 🌟 核心特性
 
 - ⚡ **超低延迟直连**：无需本地命令行代理中转，直接由 NextJS 服务器端向 Google API 发送 REST HTTP 请求，首字响应缩短至 **100-200ms**。
-- 🔄 **原子化租赁锁控制**：使用 SQLite WAL (Write-Ahead Logging) 模式配合并发原子锁，多客户端高并发调用时能完美将请求分发到不同账号。
+- 🔄 **原子化租赁锁控制**：使用 Node.js 内置 SQLite 与 WAL (Write-Ahead Logging) 模式配合并发原子锁，多客户端高并发调用时能完美将请求分发到不同账号。
 - 🔑 **自动凭证刷新**：利用 Google OAuth 2.0 接口在后台自动刷新 Access Token，无需扫码或频繁登录。
 - 🛡️ **IP 安全拦截**：支持 `localhost`/`127.0.0.1` 环回连接免密访问，对公网/局域网远程管理时支持配置 `ADMIN_TOKEN` 拦截未授权操作，有效防御 Host 头部劫持。
 - 📉 **AI Studio 降级备份**：当池内所有免费额度账号均耗尽 (429) 或失效时，支持自动无缝流转降级到备用的 Google AI Studio API Key（付费或赠送额度）。
@@ -108,7 +108,7 @@ npm install
 复制 `.env.example` 为 `.env`，然后填入 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`，以及需要远程访问时的 `ADMIN_TOKEN`。
 
 ### 3. 初始化数据库
-项目采用 Prisma ORM 配合 SQLite。请执行以下指令生成 Prisma 客户端：
+项目保留 Prisma schema 作为结构校验来源，运行期使用 Node.js 内置 SQLite 访问本地数据库。请执行以下指令生成/刷新 Prisma schema 辅助客户端：
 ```bash
 npm run db:generate
 ```
@@ -186,7 +186,7 @@ npm run accounts:view
 ```txt
 ├── prisma/
 │   ├── dev.db             # SQLite 数据库文件 (运行时生成)
-│   └── schema.prisma      # Prisma 数据库结构
+│   └── schema.prisma      # Prisma 数据库结构校验来源
 ├── scripts/
 │   ├── login.js           # 自动拉起浏览器进行 Google 账户授权并导入的脚本
 │   ├── clean-cache.js     # 定时清理 NextJS Build 缓存
@@ -199,7 +199,7 @@ npm run accounts:view
 │   ├── lib/
 │   │   ├── antigravityPool.ts  # 流转池核心执行逻辑 (OAuth, 租赁抢占等)
 │   │   ├── adminAuth.ts   # 管理端权限认证
-│   │   └── prisma.ts      # Prisma Client 初始化及 SQLite wal 配置
+│   │   └── prisma.ts      # Node SQLite 数据访问层及 WAL 配置
 │   └── proxy.ts           # 匹配器中间件
 ```
 
@@ -207,5 +207,5 @@ npm run accounts:view
 
 ## 🛡️ 安全与隐私警告
 
-1. **敏感凭据保护**：Prisma SQLite 数据库文件 `dev.db` 包含池内各账号的 `refreshToken`。此凭据拥有访问对应 Google 账号的权限。**请绝对不要将 `dev.db`、`.env` 或包含账号信息的日志提交到 Git 仓库或公开上传。**
+1. **敏感凭据保护**：SQLite 数据库文件 `dev.db` 包含池内各账号的 `refreshToken`。此凭据拥有访问对应 Google 账号的权限。**请绝对不要将 `dev.db`、`.env` 或包含账号信息的日志提交到 Git 仓库或公开上传。**
 2. **本地运行建议**：默认脚本已绑定 `127.0.0.1` 环回地址。如果需要部署到局域网或公网，**务必在 `.env` 中设置高强度的 `ADMIN_TOKEN`**，并确认反向代理正确传递客户端来源信息，以防账号池管理页面被恶意扫描和盗用。

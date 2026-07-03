@@ -10,7 +10,9 @@
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 18080",
     "lint": "eslint",
-    "verify": "npm run lint && npm run build",
+    "typecheck": "tsc --noEmit",
+    "prisma:validate": "node scripts/validate-prisma.js",
+    "verify": "npm run lint && npm run typecheck && npm run prisma:validate && npm run build",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "clean:cache": "node scripts/clean-cache.js",
@@ -19,7 +21,7 @@
     "login": "node scripts/login.js"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0",
+    "@prisma/client": "^6.19.3",
     "https-proxy-agent": "^9.0.0",
     "next": "16.2.9",
     "react": "19.2.4",
@@ -33,7 +35,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
-    "prisma": "^5.22.0",
+    "prisma": "^6.19.3",
     "tailwindcss": "^4",
     "typescript": "^5"
   },

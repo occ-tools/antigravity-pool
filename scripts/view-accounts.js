@@ -1,5 +1,5 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const { createLocalDb } = require('./local-db');
+const db = createLocalDb();
 
 const showSecrets = process.argv.includes('--show-secrets');
 
@@ -10,9 +10,7 @@ function maskSecret(value) {
 }
 
 async function main() {
-  const accounts = await prisma.account.findMany({
-    orderBy: { createdAt: 'desc' },
-  });
+  const accounts = db.listAccounts();
 
   const output = accounts.map((account) => ({
     ...account,
@@ -26,6 +24,6 @@ async function main() {
   console.log(JSON.stringify(output, null, 2));
 }
 
-main().finally(async () => {
-  await prisma.$disconnect();
+main().finally(() => {
+  db.close();
 });

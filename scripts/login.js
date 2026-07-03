@@ -7,9 +7,8 @@
 
 const http = require('http');
 const { spawn } = require('child_process');
-const { PrismaClient } = require('@prisma/client');
-
-const prisma = new PrismaClient();
+const { createLocalDb } = require('./local-db');
+const db = createLocalDb();
 
 const fs = require('fs');
 const path = require('path');
@@ -161,31 +160,24 @@ const server = http.createServer(async (req, res) => {
     console.log('💾 Saving account to the local database...');
     
     // Check if account already exists
-    const existing = await prisma.account.findFirst({
-      where: { email }
-    });
+    const existing = db.findAccountByEmail(email);
 
     let savedAccount;
     if (existing) {
-      savedAccount = await prisma.account.update({
-        where: { id: existing.id },
-        data: {
-          name,
-          refreshToken: refresh_token,
-          status: 'active',
-          quotaStatus: 'available',
-          quotaResetAt: null
-        }
+      savedAccount = db.updateAccount(existing.id, {
+        name,
+        refreshToken: refresh_token,
+        status: 'active',
+        quotaStatus: 'available',
+        quotaResetAt: null
       });
       console.log(`✓ Updated existing account in pool.`);
     } else {
-      savedAccount = await prisma.account.create({
-        data: {
-          name,
-          email,
-          refreshToken: refresh_token,
-          status: 'active',
-        }
+      savedAccount = db.createAccount({
+        name,
+        email,
+        refreshToken: refresh_token,
+        status: 'active',
       });
       console.log(`✓ Created new account in pool.`);
     }
@@ -199,7 +191,7 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     console.error('\n❌ Login / Exchange failed:', err.message);
   } finally {
-    await prisma.$disconnect();
+    db.close();
     process.exit(0);
   }
 });

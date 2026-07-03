@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import type { Account, AccountLease } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/adminAuth';
 import { NextResponse } from 'next/server';
 
@@ -35,7 +36,7 @@ export async function GET(req: Request) {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     await prisma.accountLease.deleteMany({ where: { leaseUntil: { lte: now } } });
 
-    const [accounts, logs] = await Promise.all([
+    const [rawAccounts, logs] = await Promise.all([
       prisma.account.findMany({
         orderBy: { name: 'asc' },
         include: {
@@ -55,6 +56,7 @@ export async function GET(req: Request) {
         },
       }),
     ]);
+    const accounts = rawAccounts as Array<Account & { leases: AccountLease[] }>;
 
     const totalRequests = logs.length;
     const total429 = logs.filter((l) => l.statusCode === 429).length;
@@ -71,7 +73,7 @@ export async function GET(req: Request) {
     }
 
     for (const log of logs) {
-      const accountName = log.account.name;
+      const accountName = log.account?.name ?? '未知';
       const current = accountStatsMap.get(accountName) || { count429: 0, total: 0 };
       current.total += 1;
       if (log.statusCode === 429) {

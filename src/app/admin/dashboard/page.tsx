@@ -67,17 +67,27 @@ export default function AdminDashboard() {
 
   // Initial data load and periodic auto-refresh every 30s
   useEffect(() => {
-    loadData();
-    const interval = window.setInterval(loadData, 30_000);
-    return () => window.clearInterval(interval);
+    const refresh = () => {
+      void loadData();
+    };
+    const initialLoad = window.setTimeout(refresh, 0);
+    const interval = window.setInterval(refresh, 30_000);
+    return () => {
+      window.clearTimeout(initialLoad);
+      window.clearInterval(interval);
+    };
   }, [loadData]);
 
   // Initialize theme from localStorage
   useEffect(() => {
-    setTheme((currentTheme) => {
-      const savedTheme = initialTheme(currentTheme);
-      return savedTheme === currentTheme ? currentTheme : savedTheme;
-    });
+    const timer = window.setTimeout(() => {
+      setTheme((currentTheme) => {
+        const savedTheme = initialTheme(currentTheme);
+        return savedTheme === currentTheme ? currentTheme : savedTheme;
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   const setThemeMode = (nextTheme: ThemeMode) => {

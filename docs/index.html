@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Antigravity Pool</title>
+    <meta
+      name="description"
+      content="Antigravity Pool is a local OpenAI-compatible Google/Gemini account rotation proxy built with Next.js and Prisma."
+    />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f2ea;
+        --panel: rgba(255, 252, 246, 0.86);
+        --text: #27302a;
+        --muted: #687268;
+        --border: rgba(103, 113, 101, 0.24);
+        --accent: #6f8f76;
+        --accent-2: #8f7869;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #060a12;
+          --panel: rgba(10, 16, 29, 0.84);
+          --text: #e8edf5;
+          --muted: #9aa7b8;
+          --border: rgba(110, 142, 184, 0.26);
+          --accent: #55c7e8;
+          --accent-2: #8c7cff;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 10% 12%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 26rem),
+          radial-gradient(circle at 90% 12%, color-mix(in srgb, var(--accent-2) 20%, transparent), transparent 28rem),
+          var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(1080px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 48px 0;
+      }
+
+      header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(40px, 8vw, 84px);
+        line-height: 0.95;
+        letter-spacing: 0;
+      }
+
+      .kicker {
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
+      a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 42px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0 15px;
+        color: var(--text);
+        background: var(--panel);
+        font-size: 13px;
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      a.primary {
+        border: 0;
+        color: white;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+        gap: 18px;
+        margin-top: 24px;
+      }
+
+      section {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 22px;
+      }
+
+      h2 {
+        margin: 0 0 10px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      pre {
+        overflow: auto;
+        margin: 16px 0 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        background: color-mix(in srgb, var(--bg) 74%, transparent);
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      ul {
+        display: grid;
+        gap: 12px;
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      li {
+        border-left: 3px solid var(--accent);
+        padding-left: 12px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      strong {
+        color: var(--text);
+      }
+
+      @media (max-width: 760px) {
+        main {
+          padding: 28px 0;
+        }
+
+        header,
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .actions {
+          justify-content: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div class="kicker">OpenAI-compatible local pool</div>
+          <h1>Antigravity Pool</h1>
+        </div>
+        <nav class="actions" aria-label="Project links">
+          <a class="primary" href="https://github.com/Hephaestus-DevKit/antigravity-pool">GitHub</a>
+          <a href="https://github.com/Hephaestus-DevKit/antigravity-pool#readme">README</a>
+        </nav>
+      </header>
+
+      <div class="grid">
+        <section>
+          <h2>本地 Google/Gemini 账号流转代理池</h2>
+          <p>
+            这是一个需要 Node.js 服务端运行的 Next.js + Prisma 应用。GitHub Pages 站点用于发布项目说明和入口；
+            真实 API、管理面板、SQLite 数据库、OAuth token 刷新和流式代理都应通过本地或服务器上的 Next.js 进程运行。
+          </p>
+          <pre><code>npm install
+npm run db:generate
+npm run dev
+
+Base URL: http://localhost:18080/api/v1
+Admin:    http://localhost:18080/admin/dashboard</code></pre>
+        </section>
+
+        <section>
+          <h2>发布状态</h2>
+          <ul>
+            <li><strong>CI:</strong> 每次推送运行 lint、typecheck、Prisma schema validate 和生产构建。</li>
+            <li><strong>Pages:</strong> 每次推送 main 后发布这个静态项目页。</li>
+            <li><strong>Server app:</strong> 需要支持 Node.js 的运行环境，不能完整托管在静态 Pages 上。</li>
+          </ul>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
+

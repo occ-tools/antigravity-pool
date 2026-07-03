@@ -44,7 +44,9 @@ export const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   if (typeof window === 'undefined') {
-    console.warn('[Antigravity Pool] Warning: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set in environment variables.');
+    if (process.env.NEXT_PHASE !== 'phase-production-build') {
+      console.warn('[Antigravity Pool] Warning: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set in environment variables.');
+    }
   }
 }
 

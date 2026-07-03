@@ -432,7 +432,7 @@ function createSSEContext(controller: ReadableStreamDefaultController, responseI
   const sendRole = () => {
     if (sentRole) return;
     sentRole = true;
-    sendRole();
+    send({ id: responseId, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
   };
 
   const sendStop = (finishReason: string) => {
@@ -440,7 +440,7 @@ function createSSEContext(controller: ReadableStreamDefaultController, responseI
   };
 
   const sendUsage = (data: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => {
-    sendUsage(data );
+    send({ id: responseId, object: 'chat.completion.chunk', created, model, choices: [], usage: data });
   };
 
   const sendContent = (text: string) => {
@@ -557,7 +557,7 @@ function streamBufferedOutput(promptText: string, model: string, allowedToolName
 
   const stream = new ReadableStream({
     async start(controller) {
-      const { send, closeWithDone, cleanup, sendRole, sendStop, sendUsage, sendContent, sendToolCall, sendError } = createSSEContext(controller, responseId, created, model);
+      const { closeWithDone, cleanup, sendRole, sendStop, sendUsage, sendContent, sendToolCall, sendError } = createSSEContext(controller, responseId, created, model);
 
       try {
         const attemptedIds = new Set<string>();

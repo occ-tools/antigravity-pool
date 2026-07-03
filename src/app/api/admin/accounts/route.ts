@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAdmin } from '@/lib/adminAuth';
 import { fetchUserEmail, refreshAccessToken } from '@/lib/antigravityPool';
+import type { Account, AccountLease } from '@/lib/prisma';
 
 export async function GET(req: Request) {
   const unauthorized = requireAdmin(req);
@@ -35,7 +36,7 @@ export async function GET(req: Request) {
           take: 1,
         },
       },
-    });
+    }) as Array<Account & { leases: AccountLease[] }>;
 
     const normalized = accounts.map((account) => ({
       id: account.id,

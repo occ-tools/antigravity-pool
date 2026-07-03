@@ -4,8 +4,8 @@
  * Run: node scripts/monitor-429.js [thresholdPercent]
  */
 
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const { createLocalDb } = require('./local-db');
+const db = createLocalDb();
 
 const THRESHOLD_PERCENT = Number(process.argv[2] || 5);
 
@@ -16,11 +16,7 @@ async function main() {
   console.log(`📊 Monitoring request logs since ${oneHourAgo.toISOString()}...`);
 
   try {
-    const logs = await prisma.requestLog.findMany({
-      where: {
-        timestamp: { gte: oneHourAgo },
-      },
-    });
+    const logs = db.requestLogsSince(oneHourAgo);
 
     const totalRequests = logs.length;
     if (totalRequests === 0) {
@@ -51,7 +47,7 @@ async function main() {
     console.error('❌ Failed to monitor database request logs:', error);
     process.exit(2);
   } finally {
-    await prisma.$disconnect();
+    db.close();
   }
 }
 
