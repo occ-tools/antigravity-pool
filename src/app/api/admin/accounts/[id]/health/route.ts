@@ -9,6 +9,10 @@ import {
   runAIStudioStream,
 } from '@/lib/antigravityPool';
 
+function isOAuthClientConfigError(message?: string) {
+  return Boolean(message?.includes('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured'));
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
@@ -61,6 +65,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         data: { status: 'active', ...quotaObservationForSuccess() },
       });
       return NextResponse.json({ ok: true, status: updated.status, message: result.text });
+    }
+
+    if (isOAuthClientConfigError(result.message)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: 'oauth_config_missing',
+          status: account.status,
+          message: '自检需要先配置 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET；当前账号未被标记为失效。',
+        },
+        { status: 409 }
+      );
     }
 
     const status = result.accountStatus ?? account.status;

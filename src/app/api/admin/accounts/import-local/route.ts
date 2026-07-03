@@ -19,6 +19,10 @@ function getCredentialEmail(credData: any): string | null {
   return email || null;
 }
 
+function getCredentialAccessToken(credData: any): string {
+  return stringFromCredential(credData?.token?.access_token);
+}
+
 export async function POST(req: Request) {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
@@ -54,6 +58,16 @@ export async function POST(req: Request) {
     let email = getCredentialEmail(credData);
     let refreshError: string | null = null;
 
+    const localAccessToken = getCredentialAccessToken(credData);
+    if (!email && localAccessToken) {
+      try {
+        email = await fetchUserEmail(localAccessToken);
+      } catch (emailErr) {
+        const message = emailErr instanceof Error ? emailErr.message : '无法读取本地 access token 对应邮箱';
+        console.warn('Failed to resolve email from local access token:', message);
+      }
+    }
+
     try {
       const refreshed = await refreshAccessToken(refreshToken);
       email = await fetchUserEmail(refreshed.access_token);
@@ -72,7 +86,7 @@ export async function POST(req: Request) {
       const updated = await prisma.account.update({
         where: { id: existing.id },
         data: {
-          name: resolvedEmail ? `Keyring Account (${resolvedEmail.split('@')[0]})` : existing.name,
+          name: resolvedEmail || existing.name,
           email: resolvedEmail,
           status: 'active',
           quotaStatus: 'unknown',
@@ -98,7 +112,7 @@ export async function POST(req: Request) {
     }
 
     // Create new account entry
-    const name = email ? `Keyring Account (${email.split('@')[0]})` : 'Imported Keyring Account';
+    const name = email || 'Imported Keyring Account';
     const account = await prisma.account.create({
       data: {
         name,

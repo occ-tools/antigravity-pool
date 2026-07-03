@@ -216,7 +216,12 @@ export default function AdminDashboard() {
       if (res.ok) {
         setSuccessMsg(source === 'import' ? `导入完成，自检通过: ${data.message || 'ok'}` : `健康检查通过: ${data.message || 'ok'}`);
       } else {
-        setErrorMsg(source === 'import' ? `导入成功，但自检失败: ${data.message || data.error || '错误'}` : `健康检查失败: ${data.message || data.error || '错误'}`);
+        const message = data.message || data.error || '错误';
+        if (data.code === 'oauth_config_missing') {
+          setSuccessMsg(message);
+        } else {
+          setErrorMsg(source === 'import' ? `导入成功，但自检失败: ${message}` : `健康检查失败: ${message}`);
+        }
       }
       await loadData();
     } catch (err) {
@@ -463,11 +468,15 @@ export default function AdminDashboard() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/50">
-                  {accounts.map((acc) => (
-                    <tr key={acc.id} className="group hover:bg-slate-900/40 transition-all duration-200">
+                  {accounts.map((acc) => {
+                    const displayName = acc.email || acc.name;
+                    const detailName = acc.email && acc.name !== acc.email ? acc.name : '';
+
+                    return (
+                    <tr key={acc.id} className="group account-row transition-all duration-200">
                       <td className="px-5 py-4">
-                        <div className="font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors duration-200">{acc.name}</div>
-                        {acc.email && <div className="text-[10px] text-slate-500 mt-0.5">{acc.email}</div>}
+                        <div className="font-semibold text-slate-200 group-hover:text-indigo-400 transition-colors duration-200">{displayName}</div>
+                        {detailName && <div className="text-[10px] text-slate-500 mt-0.5">{detailName}</div>}
                         {acc.status !== 'active' && acc.quotaMessage && (
                           <div className="text-[10px] text-rose-400/90 mt-1 max-w-[360px] truncate flex items-center gap-1.5" title={acc.quotaMessage}>
                             <svg className="w-3 h-3 text-rose-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -524,7 +533,8 @@ export default function AdminDashboard() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
