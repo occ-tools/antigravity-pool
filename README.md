@@ -202,3 +202,29 @@ src/
 ## Deployment
 
 This project should be deployed as a Node.js service, not as static hosting. GitHub Pages is intentionally not used because it cannot run API routes, OAuth refresh, SQLite, or the account dashboard backend.
+
+### Docker (recommended for a server)
+
+The repository includes a production Docker image, a persistent SQLite volume, and
+a liveness endpoint at `/api/health`. Build and start it on a trusted host:
+
+```bash
+cp .env.example .env
+# Fill in GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and a strong ADMIN_TOKEN.
+docker compose up -d --build
+```
+
+The included Compose file publishes only to `127.0.0.1:18080`; put an
+authenticated reverse proxy in front of it if remote access is required. Keep the
+named volume: it contains the SQLite database and OAuth refresh tokens.
+
+Each successful push to `main` also publishes `ghcr.io/hephaestus-devkit/antigravity-pool:latest`
+and an immutable `sha-...` tag. Pull a published image with:
+
+```bash
+docker pull ghcr.io/hephaestus-devkit/antigravity-pool:latest
+```
+
+Publishing an image is intentionally separate from rollout: this project has no
+configured production host, secrets store, or persistent volume outside this
+repository. Configure those before exposing the service beyond localhost.

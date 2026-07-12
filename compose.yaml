@@ -1,0 +1,15 @@
+services:
+  antigravity-pool:
+    build: .
+    ports:
+      - "127.0.0.1:18080:18080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: file:/app/prisma/dev.db
+    volumes:
+      - antigravity-pool-data:/app/prisma
+    restart: unless-stopped
+
+volumes:
+  antigravity-pool-data:

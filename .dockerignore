@@ -1,0 +1,12 @@
+.git
+.github
+.next
+node_modules
+npm-debug.log*
+.env*
+!.env.example
+dev.db
+prisma/*.db
+prisma/*.db-*
+coverage
+README.md
